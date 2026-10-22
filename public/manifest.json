@@ -1,0 +1,32 @@
+{
+  "id": "/",
+  "name": "AI Viral Shorts Cutter",
+  "short_name": "ViralCutter",
+  "description": "Caçador e editor inteligente de cortes virais para YouTube Shorts, Reels e TikTok com inteligência artificial e publicação automática.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0c0d14",
+  "theme_color": "#0c0d14",
+  "icons": [
+    {
+      "src": "/pwa-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-maskable-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGradMask" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#180e29"/>
+      <stop offset="50%" stop-color="#0c0d14"/>
+      <stop offset="100%" stop-color="#090a10"/>
+    </linearGradient>
+    <linearGradient id="primaryGradMask" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a855f7"/>
+      <stop offset="50%" stop-color="#ec4899"/>
+      <stop offset="100%" stop-color="#f43f5e"/>
+    </linearGradient>
+    <filter id="shadowMask" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#a855f7" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+
+  <!-- Full-bleed background for maskable safe-zone -->
+  <rect width="512" height="512" fill="url(#bgGradMask)"/>
+
+  <!-- Centered safe-zone iconography (within central 70%) -->
+  <g transform="translate(64, 64) scale(0.75)" filter="url(#shadowMask)">
+    <!-- Play Triangle -->
+    <path d="M 200 150 L 370 256 L 200 362 Z" fill="url(#primaryGradMask)"/>
+    <!-- Cut Notch -->
+    <path d="M 170 210 L 320 256 L 170 302" fill="none" stroke="#0c0d14" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- AI Sparkle / Star -->
+    <path d="M 390 190 Q 405 190 405 175 Q 405 190 420 190 Q 405 190 405 205 Q 405 190 390 190 Z" fill="#38bdf8"/>
+    <circle cx="160" cy="180" r="14" fill="#ec4899"/>
+    <circle cx="160" cy="332" r="14" fill="#a855f7"/>
+  </g>
+</svg>

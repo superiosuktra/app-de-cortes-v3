@@ -1,0 +1,6 @@
+{
+  "name": "AI Viral Shorts Cutter",
+  "description": "Caçador e editor inteligente de cortes virais para YouTube Shorts, Reels e TikTok com inteligência artificial, análise de retenção e legendas magnéticas.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
