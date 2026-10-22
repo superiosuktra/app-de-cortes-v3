@@ -18,6 +18,9 @@ import {
   Sparkles,
   HelpCircle,
   Copy,
+  Bell,
+  Send,
+  ArrowLeft,
 } from 'lucide-react';
 import { PlatformCredentials } from '../types';
 import { TikTokReviewGuideModal } from './TikTokReviewGuideModal';
@@ -136,9 +139,47 @@ export const ConnectionSettings: React.FC<ConnectionSettingsProps> = ({
     }
   };
 
+  const [discordWebhookUrl, setDiscordWebhookUrl] = useState<string>(creds.webhooks?.discordWebhookUrl || '');
+  const [telegramBotToken, setTelegramBotToken] = useState<string>(creds.webhooks?.telegramBotToken || '');
+  const [telegramChatId, setTelegramChatId] = useState<string>(creds.webhooks?.telegramChatId || '');
+  const [isTestingWebhook, setIsTestingWebhook] = useState<boolean>(false);
+  const [webhookFeedback, setWebhookFeedback] = useState<string>('');
+
+  const handleTestWebhook = async () => {
+    setIsTestingWebhook(true);
+    setWebhookFeedback('');
+    try {
+      const res = await authFetch('/api/webhook/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          discordWebhookUrl,
+          telegramBotToken,
+          telegramChatId,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setWebhookFeedback(data.message || '✅ Notificação enviada com sucesso!');
+        confetti({ particleCount: 35, spread: 50 });
+      } else {
+        setWebhookFeedback(`⚠️ ${data.error || data.message || 'Falha ao disparar webhook'}`);
+      }
+    } catch (err: any) {
+      setWebhookFeedback(`❌ Erro: ${err.message}`);
+    } finally {
+      setIsTestingWebhook(false);
+    }
+  };
+
   useEffect(() => {
     if (credentials) {
       setCreds(credentials);
+      if (credentials.webhooks) {
+        if (credentials.webhooks.discordWebhookUrl !== undefined) setDiscordWebhookUrl(credentials.webhooks.discordWebhookUrl);
+        if (credentials.webhooks.telegramBotToken !== undefined) setTelegramBotToken(credentials.webhooks.telegramBotToken);
+        if (credentials.webhooks.telegramChatId !== undefined) setTelegramChatId(credentials.webhooks.telegramChatId);
+      }
     }
   }, [credentials]);
 
@@ -445,8 +486,17 @@ export const ConnectionSettings: React.FC<ConnectionSettingsProps> = ({
   };
 
   const handleSaveAll = () => {
-    onSaveCredentials(creds);
-    setSaveFeedback('✅ Todas as credenciais foram salvas e sincronizadas com sucesso!');
+    const updated = {
+      ...creds,
+      webhooks: {
+        discordWebhookUrl,
+        telegramBotToken,
+        telegramChatId,
+      },
+    };
+    setCreds(updated);
+    onSaveCredentials(updated);
+    setSaveFeedback('✅ Todas as credenciais e webhooks foram salvos e sincronizados com sucesso!');
     confetti({ particleCount: 50, spread: 60, origin: { y: 0.8 } });
     setTimeout(() => setSaveFeedback(''), 3500);
   };
@@ -492,8 +542,36 @@ export const ConnectionSettings: React.FC<ConnectionSettingsProps> = ({
   ].filter(Boolean).length;
 
   return (
-    <div className="space-y-8 animate-fadeIn max-w-5xl mx-auto">
-      
+    <div className="space-y-6 animate-fadeIn max-w-5xl mx-auto">
+      {/* Sleek Top Navigation Return Bar */}
+      {onNavigateToTab && (
+        <div className="flex flex-wrap items-center justify-between gap-3 p-3 bg-[#12131b] border border-zinc-800 rounded-2xl shadow-sm">
+          <button
+            onClick={() => onNavigateToTab('publish')}
+            className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-zinc-800/90 hover:bg-zinc-700 text-zinc-200 hover:text-white border border-zinc-700/80 text-xs font-bold transition cursor-pointer"
+          >
+            <ArrowLeft className="w-4 h-4 text-purple-400" />
+            <span>← Voltar para Publicação & Fila</span>
+          </button>
+
+          <div className="flex items-center gap-2 text-xs text-zinc-400">
+            <button
+              onClick={() => onNavigateToTab('editor')}
+              className="hover:text-purple-300 transition underline underline-offset-4 cursor-pointer"
+            >
+              Ir ao Editor 9:16
+            </button>
+            <span>•</span>
+            <button
+              onClick={() => onNavigateToTab('analyze')}
+              className="hover:text-pink-300 transition underline underline-offset-4 cursor-pointer"
+            >
+              Detecção IA
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Top Banner Header */}
       <div className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-[#141226] via-[#1a142e] to-[#251433] border border-purple-900/40 p-6 sm:p-8 shadow-2xl">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 relative z-10">
@@ -1226,6 +1304,32 @@ export const ConnectionSettings: React.FC<ConnectionSettingsProps> = ({
                 />
               </div>
             </div>
+
+            {/* Optional YouTube Cookies Input for bypassing cloud datacenter IP blocks */}
+            <div className="space-y-1.5 pt-1">
+              <label className="text-[11px] font-semibold text-zinc-300 flex items-center justify-between">
+                <span className="flex items-center gap-1.5">
+                  <Lock className="w-3.5 h-3.5 text-red-400" />
+                  Cookies do YouTube (Opcional - Para Servidores em Nuvem)
+                </span>
+                <span className="text-[10px] text-zinc-500 font-mono">Formato Netscape cookies.txt</span>
+              </label>
+              <textarea
+                rows={2}
+                value={creds.youtube.cookies || ''}
+                onChange={(e) =>
+                  setCreds({
+                    ...creds,
+                    youtube: { ...creds.youtube, cookies: e.target.value },
+                  })
+                }
+                placeholder="Cole o conteúdo do seu cookies.txt aqui para downloads 100% irrestritos em servidores de nuvem..."
+                className="w-full px-3 py-2 bg-[#0e0f17] border border-zinc-800 rounded-xl text-xs font-mono text-zinc-300 placeholder-zinc-600 focus:outline-none focus:border-red-500 resize-none"
+              />
+              <p className="text-[10px] text-zinc-400">
+                Se o YouTube exigir verificação de bot no servidor em nuvem, colar seus cookies ou usar a aba de upload local garante o processamento sem bloqueios.
+              </p>
+            </div>
           </div>
 
           {/* One-Click Demo Mode Banner */}
@@ -1780,6 +1884,107 @@ export const ConnectionSettings: React.FC<ConnectionSettingsProps> = ({
               </div>
             </div>
           )}
+        </div>
+
+        {/* ============================================================ */}
+        {/* 4. WEBHOOKS DE NOTIFICAÇÃO (DISCORD & TELEGRAM) CARD */}
+        {/* ============================================================ */}
+        <div className="bg-[#141520] border border-zinc-800 hover:border-indigo-500/40 rounded-3xl p-6 sm:p-7 shadow-xl space-y-6 transition-all">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-zinc-800/80">
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 rounded-2xl bg-indigo-600/10 border border-indigo-500/30 flex items-center justify-center text-indigo-400 shadow-md">
+                <Bell className="w-6 h-6 text-indigo-400" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-lg font-black text-white">Notificações Automáticas via Webhook</h3>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-950/80 border border-indigo-500/40 text-indigo-300">
+                    Discord & Telegram
+                  </span>
+                </div>
+                <p className="text-xs text-zinc-400">Receba alertas em tempo real no seu canal ou grupo quando um corte for processado ou postado</p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleTestWebhook}
+              disabled={isTestingWebhook || (!discordWebhookUrl && !telegramBotToken)}
+              className="px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:opacity-50 text-white text-xs font-bold transition flex items-center gap-2 shadow-lg shadow-indigo-950/40 cursor-pointer"
+            >
+              {isTestingWebhook ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  <span>Enviando teste...</span>
+                </>
+              ) : (
+                <>
+                  <Send className="w-3.5 h-3.5" />
+                  <span>Testar Disparo</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          <div className="space-y-4">
+            {webhookFeedback && (
+              <div className="p-3 bg-zinc-900/90 border border-zinc-700/80 rounded-xl text-xs font-semibold text-zinc-200 animate-fadeIn">
+                {webhookFeedback}
+              </div>
+            )}
+
+            {/* Discord Webhook URL */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-zinc-300 flex items-center justify-between">
+                <span className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-indigo-400" />
+                  Discord Webhook URL
+                </span>
+                <span className="text-[10px] text-zinc-400">Canal de Texto &gt; Editar Canal &gt; Integrações &gt; Webhooks</span>
+              </label>
+              <input
+                type="url"
+                value={discordWebhookUrl}
+                onChange={(e) => setDiscordWebhookUrl(e.target.value)}
+                placeholder="https://discord.com/api/webhooks/1234567890/abcde..."
+                className="w-full px-4 py-2.5 bg-[#0e0f17] border border-zinc-700/80 rounded-xl text-xs font-mono text-white placeholder-zinc-500 focus:outline-none focus:border-indigo-500"
+              />
+            </div>
+
+            {/* Telegram Bot */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-zinc-300 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-cyan-400" />
+                    Telegram Bot Token
+                  </span>
+                  <span className="text-[10px] text-zinc-400">@BotFather</span>
+                </label>
+                <input
+                  type="text"
+                  value={telegramBotToken}
+                  onChange={(e) => setTelegramBotToken(e.target.value)}
+                  placeholder="123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ..."
+                  className="w-full px-4 py-2.5 bg-[#0e0f17] border border-zinc-700/80 rounded-xl text-xs font-mono text-white placeholder-zinc-500 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-zinc-300 flex items-center justify-between">
+                  <span>Telegram Chat ID</span>
+                  <span className="text-[10px] text-zinc-400">@userinfobot ou ID do grupo</span>
+                </label>
+                <input
+                  type="text"
+                  value={telegramChatId}
+                  onChange={(e) => setTelegramChatId(e.target.value)}
+                  placeholder="Ex: -100123456789 ou 98765432"
+                  className="w-full px-4 py-2.5 bg-[#0e0f17] border border-zinc-700/80 rounded-xl text-xs font-mono text-white placeholder-zinc-500 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+            </div>
+          </div>
         </div>
 
       </div>

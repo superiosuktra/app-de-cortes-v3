@@ -25,6 +25,7 @@ import {
   UploadCloud,
   FileVideo,
   Smartphone,
+  Settings,
 } from 'lucide-react';
 import { ViralCut, SavedCut, QueueItem, AutoPostSettings, PlatformCredentials, VideoInfo, SocialPlatform } from '../types';
 import { ShortsPhonePreview } from './ShortsPhonePreview';
@@ -121,6 +122,7 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
   const [rightPanelTab, setRightPanelTab] = useState<'preview' | 'library'>('preview');
   const [previewPlatform, setPreviewPlatform] = useState<SocialPlatform>('youtube');
   const [confirmClearLibrary, setConfirmClearLibrary] = useState<boolean>(false);
+  const [showManualTokens, setShowManualTokens] = useState<boolean>(false);
 
   // Sync previewPlatform whenever publisher platform changes
   useEffect(() => {
@@ -524,10 +526,10 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
 
         <button
           onClick={() => setIsApiModalOpen(true)}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-800/80 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 text-xs font-semibold transition"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700/80 text-zinc-300 hover:text-white text-xs font-semibold transition shadow-sm"
         >
-          <Key className="w-3.5 h-3.5 text-yellow-400" />
-          <span>Configurar APIs Oficiais</span>
+          <Settings className="w-3.5 h-3.5 text-purple-400" />
+          <span>Configurações das Redes</span>
         </button>
       </div>
 
@@ -808,35 +810,56 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
                   </span>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div className="space-y-1.5">
-                    <label className="text-[11px] font-semibold text-zinc-400">Visibilidade Inicial</label>
-                    <select
-                      value={privacy}
-                      onChange={(e) => setPrivacy(e.target.value)}
-                      className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-white focus:outline-none focus:border-purple-500"
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[11px] font-semibold text-zinc-400">Visibilidade Inicial no YouTube</label>
+                    <button
+                      type="button"
+                      onClick={() => setShowManualTokens(!showManualTokens)}
+                      className="text-[10px] text-zinc-500 hover:text-purple-400 transition"
                     >
-                      <option value="private">Privado (Recomendado para revisar)</option>
-                      <option value="unlisted">Não Listado</option>
-                      <option value="public">Público Imediato</option>
-                    </select>
+                      {showManualTokens ? '▲ Ocultar Token Manual' : '⚙️ Avançado: Token Manual'}
+                    </button>
                   </div>
+                  
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <select
+                        value={privacy}
+                        onChange={(e) => setPrivacy(e.target.value)}
+                        className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-white focus:outline-none focus:border-purple-500"
+                      >
+                        <option value="private">Privado (Recomendado para revisar)</option>
+                        <option value="unlisted">Não Listado</option>
+                        <option value="public">Público Imediato</option>
+                      </select>
+                    </div>
 
-                  <div className="space-y-1.5">
-                    <label className="text-[11px] font-semibold text-zinc-400 flex items-center justify-between">
-                      <span>Token / Código Google</span>
-                      <span className="text-[9px] text-emerald-400">Automático</span>
-                    </label>
-                    <input
-                      type="password"
-                      value={tokens.youtube}
-                      onChange={(e) => {
-                        const newT = { ...tokens, youtube: e.target.value };
-                        handleSaveTokens(newT);
-                      }}
-                      placeholder="Clique em 'Entrar com o Google' acima"
-                      className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-purple-500"
-                    />
+                    {showManualTokens ? (
+                      <div>
+                        <input
+                          type="password"
+                          value={tokens.youtube}
+                          onChange={(e) => {
+                            const newT = { ...tokens, youtube: e.target.value };
+                            handleSaveTokens(newT);
+                          }}
+                          placeholder="Token manual / Código do Google"
+                          className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-purple-500 font-mono"
+                        />
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-end">
+                        <button
+                          type="button"
+                          onClick={() => setIsApiModalOpen(true)}
+                          className="text-xs text-purple-400 hover:text-purple-300 font-medium inline-flex items-center gap-1"
+                        >
+                          <Settings className="w-3.5 h-3.5" />
+                          <span>Gerenciar Canal & Chaves</span>
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -844,89 +867,95 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
 
             {/* Instagram Reels API Configs */}
             {platform === 'Instagram Reels' && (
-              <div className="p-4 bg-[#0e0f17] border border-zinc-800 rounded-2xl space-y-4">
+              <div className="p-4 bg-[#0e0f17] border border-zinc-800 rounded-2xl space-y-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-zinc-300 flex items-center gap-1.5">
+                  <div className="flex items-center gap-2">
                     <Instagram className="w-4 h-4 text-pink-500" />
-                    Transmissão Oficial: Meta Graph API (Reels Publishing)
-                  </span>
+                    <span className="text-xs font-bold text-white">Meta Graph API (Instagram Reels)</span>
+                  </div>
                   <button
                     onClick={() => setIsApiModalOpen(true)}
-                    className="text-[10px] text-purple-400 hover:text-purple-300 font-semibold"
+                    className="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-300 hover:text-white transition"
                   >
-                    Como Obter Token?
+                    Configurar Conexão
                   </button>
                 </div>
 
-                <div className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-950/30 border border-purple-500/20 rounded-xl text-[11px] text-purple-300">
-                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                  <span>🔒 Salvo permanentemente no navegador. Você conecta uma única vez!</span>
+                <div className="flex items-center justify-between text-[11px] text-zinc-400 pt-1">
+                  <span className="flex items-center gap-1.5">
+                    <span className={`w-2 h-2 rounded-full ${tokens.instagram ? 'bg-emerald-400 animate-pulse' : 'bg-zinc-600'}`} />
+                    {tokens.instagram ? 'Conta Conectada' : 'Não conectado (configure em 1 minuto)'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowManualTokens(!showManualTokens)}
+                    className="text-[10px] text-zinc-500 hover:text-purple-400 transition"
+                  >
+                    {showManualTokens ? '▲ Ocultar Token' : '⚙️ Token Manual'}
+                  </button>
                 </div>
 
-                <div className="space-y-1.5">
-                  <label className="text-[11px] font-semibold text-zinc-400 flex items-center justify-between">
-                    <span>Meta Page Access Token (Instagram Content Publish)</span>
-                    <span className="text-[9px] text-pink-400">instagram_content_publish</span>
-                  </label>
-                  <input
-                    type="password"
-                    value={tokens.instagram}
-                    onChange={(e) => {
-                      const newT = { ...tokens, instagram: e.target.value };
-                      handleSaveTokens(newT);
-                    }}
-                    placeholder="EAA..."
-                    className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-purple-500"
-                  />
-                </div>
-
-                <p className="text-[10px] text-zinc-500 leading-normal">
-                  💡 Requer uma conta comercial ou criador no Instagram vinculada a uma Página do Facebook no Meta for Developers.
-                </p>
+                {showManualTokens && (
+                  <div className="pt-2 animate-fadeIn">
+                    <input
+                      type="password"
+                      value={tokens.instagram}
+                      onChange={(e) => {
+                        const newT = { ...tokens, instagram: e.target.value };
+                        handleSaveTokens(newT);
+                      }}
+                      placeholder="Meta Page Access Token (EAA...)"
+                      className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-purple-500 font-mono"
+                    />
+                  </div>
+                )}
               </div>
             )}
 
             {/* TikTok API Configs */}
             {platform === 'TikTok' && (
-              <div className="p-4 bg-[#0e0f17] border border-zinc-800 rounded-2xl space-y-4">
+              <div className="p-4 bg-[#0e0f17] border border-zinc-800 rounded-2xl space-y-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-zinc-300 flex items-center gap-1.5">
+                  <div className="flex items-center gap-2">
                     <span className="text-cyan-400 font-black text-xs">TT</span>
-                    Transmissão Oficial: TikTok Content Posting API
-                  </span>
+                    <span className="text-xs font-bold text-white">TikTok Content Posting API</span>
+                  </div>
                   <button
                     onClick={() => setIsApiModalOpen(true)}
-                    className="text-[10px] text-purple-400 hover:text-purple-300 font-semibold"
+                    className="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-300 hover:text-white transition"
                   >
-                    Como Obter Token?
+                    Configurar Conexão
                   </button>
                 </div>
 
-                <div className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-950/30 border border-purple-500/20 rounded-xl text-[11px] text-purple-300">
-                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                  <span>🔒 Salvo permanentemente no navegador. Você conecta uma única vez!</span>
+                <div className="flex items-center justify-between text-[11px] text-zinc-400 pt-1">
+                  <span className="flex items-center gap-1.5">
+                    <span className={`w-2 h-2 rounded-full ${tokens.tiktok ? 'bg-emerald-400 animate-pulse' : 'bg-zinc-600'}`} />
+                    {tokens.tiktok ? 'Conta TikTok Conectada' : 'Não conectado'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowManualTokens(!showManualTokens)}
+                    className="text-[10px] text-zinc-500 hover:text-purple-400 transition"
+                  >
+                    {showManualTokens ? '▲ Ocultar Token' : '⚙️ Token Manual'}
+                  </button>
                 </div>
 
-                <div className="space-y-1.5">
-                  <label className="text-[11px] font-semibold text-zinc-400 flex items-center justify-between">
-                    <span>TikTok User Access Token</span>
-                    <span className="text-[9px] text-cyan-400">video.upload / video.publish</span>
-                  </label>
-                  <input
-                    type="password"
-                    value={tokens.tiktok}
-                    onChange={(e) => {
-                      const newT = { ...tokens, tiktok: e.target.value };
-                      handleSaveTokens(newT);
-                    }}
-                    placeholder="act.example123..."
-                    className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-purple-500"
-                  />
-                </div>
-
-                <p className="text-[10px] text-zinc-500 leading-normal">
-                  💡 Requer cadastro de app no TikTok for Developers com a permissão Direct Post aprovada.
-                </p>
+                {showManualTokens && (
+                  <div className="pt-2 animate-fadeIn">
+                    <input
+                      type="password"
+                      value={tokens.tiktok}
+                      onChange={(e) => {
+                        const newT = { ...tokens, tiktok: e.target.value };
+                        handleSaveTokens(newT);
+                      }}
+                      placeholder="TikTok User Access Token (act...)"
+                      className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-purple-500 font-mono"
+                    />
+                  </div>
+                )}
               </div>
             )}
 

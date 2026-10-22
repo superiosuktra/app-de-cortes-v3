@@ -570,8 +570,20 @@ export const ShortsPhonePreview: React.FC<ShortsPhonePreviewProps> = ({
                   : 'bottom-20'
               }`}
             >
-              <div className="px-3 py-1 rounded-xl bg-black/65 backdrop-blur-md max-w-[210px] mx-auto border border-white/10 shadow-lg transition-opacity duration-200">
-                <p className="font-bold text-xs sm:text-sm tracking-normal uppercase leading-tight text-white select-none">
+              <div
+                className={`px-3 py-1 rounded-xl transition-all duration-200 ${
+                  subtitleTheme === 'minimalist'
+                    ? 'bg-transparent shadow-none max-w-[240px]'
+                    : subtitleTheme === 'submagic'
+                    ? 'bg-black/80 border border-sky-400/40 shadow-xl max-w-[220px]'
+                    : 'bg-black/65 backdrop-blur-md max-w-[210px] border border-white/10 shadow-lg'
+                } mx-auto`}
+              >
+                <p
+                  className={`font-bold text-xs sm:text-sm tracking-normal uppercase leading-tight text-white select-none ${
+                    subtitleTheme === 'minimalist' ? 'tracking-wider font-medium normal-case drop-shadow-md' : ''
+                  }`}
+                >
                   <span>{firstWords}</span>
                   <span
                     className={
@@ -583,6 +595,10 @@ export const ShortsPhonePreview: React.FC<ShortsPhonePreviewProps> = ({
                         ? 'text-cyan-300'
                         : subtitleTheme === 'hormozi'
                         ? 'text-yellow-300'
+                        : subtitleTheme === 'submagic'
+                        ? 'text-sky-300 font-black'
+                        : subtitleTheme === 'minimalist'
+                        ? 'text-white font-bold underline decoration-pink-500'
                         : 'text-white font-extrabold'
                     }
                   >

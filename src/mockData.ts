@@ -215,4 +215,18 @@ export const SUBTITLE_THEMES = [
     accent: '#7C3AED',
     desc: 'Fúcsia e roxo de alto contraste para tech e mistério.',
   },
+  {
+    id: 'submagic',
+    name: 'Submagic / Opus Clip',
+    color: '#38BDF8', // Sky Blue
+    accent: '#FDE047',
+    desc: 'Estilo karaokê com fundo translúcido e realce dinâmico em ciano e amarelo.',
+  },
+  {
+    id: 'minimalist',
+    name: 'Minimalista Editorial',
+    color: '#FFFFFF', // Clean White
+    accent: '#A1A1AA',
+    desc: 'Tipografia limpa e espaçada sem caixas pesadas, estilo documentário moderno.',
+  },
 ] as const;

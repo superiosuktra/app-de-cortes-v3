@@ -45,8 +45,18 @@ const renderRateLimiter = createRateLimiter({
 function handleRouteError(res: Response, err: any, context: string) {
   const correlationId = crypto.randomUUID();
   console.error(`[CutRoutes][${context}][${correlationId}]:`, err);
+  const errMsg = err?.message || '';
+  const isBotError =
+    errMsg.includes('Sign in to confirm you’re not a bot') ||
+    errMsg.includes('cookies') ||
+    errMsg.includes('confirm you’re not a bot');
+  const userError = isBotError
+    ? 'O YouTube solicitou confirmação de acesso no servidor em nuvem. Salve seus cookies do YouTube na Central de Conexões ou envie o arquivo diretamente na aba Upload de Vídeo.'
+    : (err?.message || 'Falha interna ao processar o vídeo. Tente novamente em instantes.');
+
   return res.status(500).json({
-    error: 'Falha interna ao processar o vídeo. Tente novamente em instantes.',
+    error: userError,
+    isBotError,
     correlationId,
   });
 }
@@ -69,6 +79,7 @@ cutRouter.post('/download-youtube-cut', renderRateLimiter, async (req: Request, 
       teaserDurationSec,
       teaserText,
       partBadge,
+      removeSilence = false,
     } = req.body;
 
     const safeYt = normalizeSafeYouTubeUrl(videoUrl);
@@ -100,6 +111,7 @@ cutRouter.post('/download-youtube-cut', renderRateLimiter, async (req: Request, 
       teaserDurationSec: typeof teaserDurationSec === 'number' ? teaserDurationSec : undefined,
       teaserText: typeof teaserText === 'string' ? teaserText : undefined,
       partBadge: typeof partBadge === 'string' ? partBadge : undefined,
+      removeSilence: Boolean(removeSilence),
     });
 
     if (!isPathInsideDir(renderedPath, TEMP_DIR) || !fs.existsSync(renderedPath)) {

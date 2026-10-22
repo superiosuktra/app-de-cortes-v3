@@ -85,6 +85,7 @@ export const EditorTab: React.FC<EditorTabProps> = ({
   const [isRenderingCut, setIsRenderingCut] = useState<boolean>(false);
   const [renderProgressMsg, setRenderProgressMsg] = useState<string>('');
   const [confirmClearEditQueue, setConfirmClearEditQueue] = useState<boolean>(false);
+  const [removeSilence, setRemoveSilence] = useState<boolean>(false);
 
   // AI Vision Smart Framing State (Opus Clip / Vizard / Klap Standard)
   const [speaker1X, setSpeaker1X] = useState<number>(38);
@@ -163,6 +164,7 @@ export const EditorTab: React.FC<EditorTabProps> = ({
             speaker2Y,
             zoom,
           },
+          removeSilence,
         }),
       });
 
@@ -964,6 +966,30 @@ export const EditorTab: React.FC<EditorTabProps> = ({
                   className="w-full px-3.5 py-2.5 bg-[#0e0f17] border border-zinc-800 rounded-xl text-sm font-bold text-yellow-400 placeholder-zinc-500 focus:outline-none focus:border-purple-500"
                 />
               </div>
+            </div>
+
+            {/* AI Jump-Cut & Retention Enhancer */}
+            <div className="p-4 bg-[#0e0f17] border border-zinc-800 rounded-2xl flex flex-wrap items-center justify-between gap-3 shadow-md">
+              <div className="space-y-0.5 max-w-md">
+                <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                  <Scissors className="w-3.5 h-3.5 text-pink-400" />
+                  Jump-Cut IA: Remover Pausas & Silêncios
+                </span>
+                <p className="text-[11px] text-zinc-400 leading-snug">
+                  Corta automaticamente hesitações e silêncios (&gt;0.35s) via FFmpeg para elevar o ritmo (WPM) ao padrão viral dos Shorts.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRemoveSilence(!removeSilence)}
+                className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                  removeSilence
+                    ? 'bg-pink-600 text-white shadow-lg shadow-pink-900/40 ring-1 ring-pink-400'
+                    : 'bg-zinc-800 text-zinc-400 hover:text-white hover:bg-zinc-700'
+                }`}
+              >
+                <span>{removeSilence ? '✓ Ativado (-32dB)' : 'Desativado'}</span>
+              </button>
             </div>
 
             {/* Actions Bar */}

@@ -1,4 +1,5 @@
 import fs from 'fs';
+import path from 'path';
 import crypto from 'crypto';
 import os from 'os';
 import { STATE_FILE, GEMINI_API_KEY } from '../config.js';
@@ -65,6 +66,7 @@ function decryptCredentialsObject(creds: any): PersistedCredentials {
   const ig = { ...DEFAULT_STATE.credentials.instagram, ...(creds?.instagram || {}) };
   const tt = { ...DEFAULT_STATE.credentials.tiktok, ...(creds?.tiktok || {}) };
   const gm = { ...DEFAULT_STATE.credentials.gemini, ...(creds?.gemini || {}) };
+  const wh = { ...(creds?.webhooks || {}) };
 
   yt.accessToken = cleanDecryptedSecret(yt.accessToken);
   yt.refreshToken = cleanDecryptedSecret(yt.refreshToken);
@@ -83,7 +85,7 @@ function decryptCredentialsObject(creds: any): PersistedCredentials {
     gm.model = 'gemini-3.8-flash';
   }
 
-  return { youtube: yt, instagram: ig, tiktok: tt, gemini: gm };
+  return { youtube: yt, instagram: ig, tiktok: tt, gemini: gm, webhooks: wh };
 }
 
 function encryptCredentialsObject(creds: PersistedCredentials): PersistedCredentials {
@@ -110,6 +112,7 @@ function encryptCredentialsObject(creds: PersistedCredentials): PersistedCredent
           apiKey: encryptSecret(creds.gemini.apiKey),
         }
       : undefined,
+    webhooks: creds.webhooks,
   };
 }
 
@@ -126,6 +129,7 @@ export interface PersistedCredentials {
     customUrl?: string;
     avatar?: string;
     verifiedAt?: string;
+    cookies?: string;
   };
   instagram: {
     accessToken: string;
@@ -151,6 +155,11 @@ export interface PersistedCredentials {
     status?: 'connected' | 'disconnected' | 'error';
     model?: string;
     verifiedAt?: string;
+  };
+  webhooks?: {
+    discordWebhookUrl?: string;
+    telegramBotToken?: string;
+    telegramChatId?: string;
   };
 }
 
@@ -294,7 +303,14 @@ class StateManager {
         accessToken: preserveRealSecret(creds.youtube.accessToken, prevYt.accessToken, nextStatus),
         refreshToken: preserveRealSecret(creds.youtube.refreshToken, prevYt.refreshToken, nextStatus),
         clientSecret: preserveRealSecret(creds.youtube.clientSecret, prevYt.clientSecret, nextStatus),
+        cookies: creds.youtube.cookies !== undefined ? creds.youtube.cookies : prevYt.cookies,
       };
+      if (creds.youtube.cookies) {
+        try {
+          const cookiePath = path.join(process.cwd(), 'data', 'cookies.txt');
+          fs.writeFileSync(cookiePath, creds.youtube.cookies, 'utf-8');
+        } catch {}
+      }
     }
     if (creds.instagram) {
       const prevIg = state.credentials.instagram;

@@ -324,3 +324,95 @@ export async function postToTikTok({
     publishedAt: new Date().toISOString(),
   };
 }
+
+/**
+ * Dispatch real webhook alerts to Discord or Telegram
+ */
+export async function sendWebhookNotification({
+  type,
+  title,
+  videoUrl,
+  platform,
+  account,
+  duration,
+  userId = 'default',
+}: {
+  type: 'post_success' | 'cut_ready' | 'test';
+  title: string;
+  videoUrl?: string;
+  platform?: string;
+  account?: string;
+  duration?: number;
+  userId?: string;
+}) {
+  const creds = stateManager.getCredentials(userId) as any;
+  const webhooks = creds?.webhooks || {};
+
+  const results: { platform: string; success: boolean; error?: string }[] = [];
+
+  // 1. Discord Webhook
+  if (webhooks.discordWebhookUrl && webhooks.discordWebhookUrl.startsWith('https://discord.com/api/webhooks/')) {
+    try {
+      const isTest = type === 'test';
+      const color = type === 'post_success' ? 0x10b981 : isTest ? 0x8b5cf6 : 0xec4899;
+      const titleText = isTest
+        ? '🔔 Teste de Conexão: Webhook Discord Configurado!'
+        : type === 'post_success'
+        ? `🚀 Corte Publicado com Sucesso no ${platform?.toUpperCase() || 'Social'}!`
+        : '✂️ Novo Corte Viral Renderizado e Pronto para Postar!';
+
+      const body = {
+        username: 'Viral Shorts Studio',
+        avatar_url: 'https://cdn-icons-png.flaticon.com/512/11516/11516766.png',
+        embeds: [
+          {
+            title: titleText,
+            description: `**Título:** ${title}\n${account ? `**Canal/Conta:** ${account}\n` : ''}${duration ? `**Duração:** ${duration}s\n` : ''}${videoUrl ? `**Link:** [Abrir Vídeo](${videoUrl})` : ''}`,
+            color,
+            timestamp: new Date().toISOString(),
+            footer: { text: 'AI Viral Shorts Cutter • Automação Contínua' },
+          },
+        ],
+      };
+
+      const res = await fetch(webhooks.discordWebhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      results.push({ platform: 'discord', success: res.ok, error: res.ok ? undefined : `HTTP ${res.status}` });
+    } catch (e: any) {
+      results.push({ platform: 'discord', success: false, error: e.message });
+    }
+  }
+
+  // 2. Telegram Bot
+  if (webhooks.telegramBotToken && webhooks.telegramChatId) {
+    try {
+      const msg =
+        `🔔 *AI Viral Shorts Studio*\n\n` +
+        `*${type === 'test' ? 'Teste de Notificação Concluído!' : type === 'post_success' ? '🚀 Publicado com Sucesso' : '✂️ Corte Pronto'}*\n` +
+        `• Título: ${title}\n` +
+        (account ? `• Conta: ${account}\n` : '') +
+        (platform ? `• Plataforma: ${platform}\n` : '') +
+        (videoUrl ? `• Link: ${videoUrl}\n` : '');
+
+      const tgUrl = `https://api.telegram.org/bot${webhooks.telegramBotToken}/sendMessage`;
+      const res = await fetch(tgUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: webhooks.telegramChatId,
+          text: msg,
+          parse_mode: 'Markdown',
+        }),
+      });
+      results.push({ platform: 'telegram', success: res.ok, error: res.ok ? undefined : `HTTP ${res.status}` });
+    } catch (e: any) {
+      results.push({ platform: 'telegram', success: false, error: e.message });
+    }
+  }
+
+  return results;
+}

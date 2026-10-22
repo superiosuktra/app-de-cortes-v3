@@ -8,7 +8,7 @@ import { ConnectionSettings } from './components/ConnectionSettings';
 import { AutoBotStatus } from './components/AutoPostQueueManager';
 import { VideoInfo, ViralCut, SavedCut, PlatformCredentials, QueueItem, AutoPostSettings, SocialPlatform, AuthUser } from './types';
 import { fetchJson, getAuthToken, setAuthToken, authFetch } from './utils/api';
-import { Flame, Sparkles, Scissors, Share2, Compass, ShieldCheck, Key, Zap } from 'lucide-react';
+import { Flame, Sparkles, Scissors, Share2, Compass, ShieldCheck, Key, Zap, Settings } from 'lucide-react';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { GoogleLoginGate } from './components/GoogleLoginGate';
 import confetti from 'canvas-confetti';
@@ -1446,6 +1446,11 @@ export default function App() {
         setActiveTab={setActiveTab}
         cutsCount={viralCuts.length}
         savedCount={savedCuts.length}
+        connectedApisCount={[
+          credentials.youtube?.status === 'connected',
+          credentials.instagram?.status === 'connected',
+          credentials.tiktok?.status === 'connected',
+        ].filter(Boolean).length}
         queueCount={queue.filter((q) => q.status === 'pending').length}
         isQueueActive={autoPostSettings.isActive}
         lastSavedAt={lastSavedAt}
@@ -1662,8 +1667,8 @@ export default function App() {
               Publicação
             </span>
             <span className="flex items-center gap-1.5 hover:text-white transition cursor-pointer" onClick={() => { setLegalView(null); setActiveTab('settings'); }}>
-              <Key className="w-3.5 h-3.5 text-pink-400" />
-              APIs & Conexões
+              <Settings className="w-3.5 h-3.5 text-purple-400" />
+              Configurações & APIs
             </span>
           </div>
 

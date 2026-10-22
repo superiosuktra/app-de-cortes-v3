@@ -9,7 +9,14 @@ export type VideoFormat =
   | 'original'
   | 'square';
 
-export type SubtitleTheme = 'clean' | 'none' | 'hormozi' | 'beast' | 'cyberpunk';
+export type SubtitleTheme =
+  | 'clean'
+  | 'none'
+  | 'hormozi'
+  | 'beast'
+  | 'cyberpunk'
+  | 'submagic'
+  | 'minimalist';
 
 export interface SmartFramingConfig {
   speaker1X: number; // 0..100 horizontal center for Speaker 1 (Host/Left)
@@ -51,7 +58,10 @@ export interface ViralCut {
     youtube: string;
     instagram: string;
     tiktok: string;
+    facebook?: string;
+    linkedin?: string;
   };
+  intent?: CutIntent;
   hashtags: string[];
   overlaySubtitlesSample?: string[];
   partBadge?: string;
@@ -61,6 +71,16 @@ export interface ViralCut {
   teaserEndTime?: string;
   teaserText?: string;
   retentionStrategyOption?: 1 | 2 | 3;
+  removeSilence?: boolean;
+  autoBRoll?: boolean;
+}
+
+export interface WebhookConfig {
+  discordWebhookUrl?: string;
+  telegramBotToken?: string;
+  telegramChatId?: string;
+  notifyOnCutReady?: boolean;
+  notifyOnPostSuccess?: boolean;
 }
 
 export interface TrendingVideo {
@@ -89,6 +109,54 @@ export interface SavedCut {
   createdAt: string;
 }
 
+export type CutIntent =
+  | 'viral_hook'
+  | 'comedy'
+  | 'controversy'
+  | 'storytelling'
+  | 'educational'
+  | 'motivational';
+
+export interface BrandKit {
+  id: string;
+  name: string;
+  watermarkText?: string;
+  watermarkPosition: 'top_left' | 'top_right' | 'bottom_left' | 'bottom_right' | 'center_top';
+  primaryColor: string;
+  secondaryColor: string;
+  fontFamily: string;
+  socialHandle?: string;
+  introBadgeText?: string;
+  outroCallToAction?: string;
+}
+
+export interface AiProviderConfig {
+  provider: 'gemini' | 'ollama' | 'openai' | 'anthropic';
+  ollamaEndpoint: string;
+  ollamaModel: string;
+  activeModel: string;
+  openaiApiKey?: string;
+  anthropicApiKey?: string;
+  status?: 'connected' | 'disconnected' | 'testing';
+  latencyMs?: number;
+}
+
+export interface LiveStreamChannel {
+  id: string;
+  platform: 'twitch' | 'youtube' | 'kick';
+  channelName: string;
+  channelUrl: string;
+  avatar: string;
+  isLive: boolean;
+  streamTitle?: string;
+  viewerCount?: number;
+  lastChecked: string;
+  autoClipEnabled: boolean;
+  minDurationMinutes: number;
+  targetIntent: CutIntent;
+  lastProcessedVodId?: string;
+}
+
 export interface PlatformCredentials {
   youtube: {
     accessToken: string;
@@ -99,6 +167,7 @@ export interface PlatformCredentials {
     customUrl?: string;
     avatar?: string;
     verifiedAt?: string;
+    cookies?: string;
     status: 'connected' | 'disconnected' | 'error';
   };
   instagram: {
@@ -120,10 +189,30 @@ export interface PlatformCredentials {
     verifiedAt?: string;
     status: 'connected' | 'disconnected' | 'error';
   };
+  facebook?: {
+    accessToken: string;
+    pageId?: string;
+    pageName?: string;
+    avatar?: string;
+    verifiedAt?: string;
+    status: 'connected' | 'disconnected' | 'error';
+  };
+  linkedin?: {
+    accessToken: string;
+    personUrn?: string;
+    organizationUrn?: string;
+    accountName?: string;
+    avatar?: string;
+    verifiedAt?: string;
+    status: 'connected' | 'disconnected' | 'error';
+  };
+  brandKit?: BrandKit;
+  aiConfig?: AiProviderConfig;
+  webhooks?: WebhookConfig;
 }
 
 export type QueueItemStatus = 'pending' | 'posting' | 'published' | 'failed' | 'paused';
-export type SocialPlatform = 'youtube' | 'instagram' | 'tiktok';
+export type SocialPlatform = 'youtube' | 'instagram' | 'tiktok' | 'facebook' | 'linkedin';
 
 export interface QueueItem {
   id: string;
@@ -142,6 +231,8 @@ export interface QueueItem {
     youtube: string;
     instagram: string;
     tiktok: string;
+    facebook?: string;
+    linkedin?: string;
   };
   hashtags: string[];
   platforms: SocialPlatform[];
@@ -159,11 +250,13 @@ export interface QueueItem {
 export interface AutoPostSettings {
   autoEnqueueOnGenerate: boolean; // Automate queueing upon video generation
   isActive: boolean; // Running / Paused
-  intervalMinutes: number; // Interval between consecutive posts (e.g., 30)
+  intervalMinutes: number; // Interval between consecutive posts (e.g., 5, 15, 30)
   targetPlatforms: {
     youtube: boolean;
     instagram: boolean;
     tiktok: boolean;
+    facebook?: boolean;
+    linkedin?: boolean;
   };
   defaultPrivacy: 'public' | 'unlisted' | 'private';
 }

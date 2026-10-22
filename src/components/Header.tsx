@@ -1,5 +1,5 @@
 import React from 'react';
-import { Flame, Sparkles, Scissors, Share2, Compass, Film, Zap, Bot, RefreshCw, LogOut, User } from 'lucide-react';
+import { Flame, Sparkles, Scissors, Share2, Compass, Settings, Zap, Bot, RefreshCw, LogOut, User } from 'lucide-react';
 import { AutoSaveIndicator } from './AutoSaveIndicator';
 import { PWAInstallButton } from './PWAInstallButton';
 import { AuthUser } from '../types';
@@ -26,6 +26,7 @@ export const Header: React.FC<HeaderProps> = ({
   setActiveTab,
   cutsCount,
   savedCount,
+  connectedApisCount = 0,
   queueCount = 0,
   isQueueActive = false,
   lastSavedAt = null,
@@ -90,6 +91,17 @@ export const Header: React.FC<HeaderProps> = ({
               )}
               <AutoSaveIndicator lastSavedAt={lastSavedAt} isSaving={isSaving} onManualSync={onManualSync} />
               <PWAInstallButton />
+              <button
+                onClick={() => setActiveTab('settings')}
+                title="Configurações de Conexão e APIs"
+                className={`p-1.5 rounded-xl border transition ${
+                  activeTab === 'settings'
+                    ? 'bg-purple-950/80 text-purple-300 border-purple-500'
+                    : 'bg-zinc-900/90 text-zinc-400 hover:text-white border-zinc-800'
+                }`}
+              >
+                <Settings className={`w-4 h-4 text-purple-400 ${activeTab === 'settings' ? 'rotate-90' : ''} transition-transform`} />
+              </button>
               {user && onLogout && (
                 <button
                   onClick={onLogout}
@@ -116,7 +128,7 @@ export const Header: React.FC<HeaderProps> = ({
                 ) : (
                   <Bot className="w-4 h-4 text-zinc-950" />
                 )}
-                <span>{isAutoBotRunning ? '🤖 Bot Executando...' : '🤖 Bot Automático (1 Clique)'}</span>
+                <span>{isAutoBotRunning ? '🤖 Bot Executando...' : '🤖 Bot Automático'}</span>
               </button>
             )}
 
@@ -191,21 +203,27 @@ export const Header: React.FC<HeaderProps> = ({
                   </span>
                 )}
               </button>
-
-              <button
-                onClick={() => setActiveTab('settings')}
-                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-all duration-200 shrink-0 ${
-                  activeTab === 'settings'
-                    ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-md shadow-purple-900/40'
-                    : 'text-zinc-400 hover:text-white hover:bg-zinc-800/50'
-                }`}
-                title="Configurações de Conexão das APIs"
-              >
-                <Film className="w-4 h-4 text-yellow-400" />
-                <span className="hidden lg:inline">5. APIs & Conexões</span>
-                <span className="lg:hidden">APIs</span>
-              </button>
             </nav>
+
+            {/* Dedicated Settings Button */}
+            <button
+              onClick={() => setActiveTab('settings')}
+              title="Configurações de APIs, Conexões e Webhooks"
+              className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold transition border shrink-0 ${
+                activeTab === 'settings'
+                  ? 'bg-gradient-to-r from-purple-900/80 to-indigo-900/80 text-white border-purple-500 shadow-md shadow-purple-950/40 ring-1 ring-purple-500/50'
+                  : 'bg-[#161720] hover:bg-zinc-800/90 text-zinc-300 hover:text-white border-zinc-800'
+              }`}
+            >
+              <Settings className={`w-4 h-4 text-purple-400 transition-transform duration-300 ${activeTab === 'settings' ? 'rotate-90 text-pink-400' : ''}`} />
+              <span className="hidden sm:inline">Configurações</span>
+              {connectedApisCount !== undefined && (
+                <span
+                  className={`w-2 h-2 rounded-full ${connectedApisCount > 0 ? 'bg-emerald-400 animate-pulse' : 'bg-zinc-600'}`}
+                  title={`${connectedApisCount} de 3 redes conectadas`}
+                />
+              )}
+            </button>
 
             {/* Desktop Quick Actions: AutoSave Status, PWA Install & User Profile */}
             <div className="hidden lg:flex items-center gap-2.5">

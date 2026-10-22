@@ -9,6 +9,7 @@ import {
   verifyTikTokToken,
   postToInstagram,
   postToTikTok,
+  sendWebhookNotification,
 } from '../services/socialService.js';
 import { stateManager } from '../services/stateService.js';
 
@@ -642,6 +643,54 @@ socialRouter.post('/auth/google/quick-connect', async (req: Request, res: Respon
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message || 'Erro ao conectar com o Google.' });
+  }
+});
+
+// 7. Test Webhook (Discord / Telegram) Endpoint
+socialRouter.post('/webhook/test', async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId || 'default';
+    const { discordWebhookUrl, telegramBotToken, telegramChatId } = req.body;
+
+    if (discordWebhookUrl || telegramBotToken) {
+      const existing = stateManager.getCredentials(userId) as any;
+      stateManager.updateCredentials(
+        {
+          webhooks: {
+            ...existing.webhooks,
+            discordWebhookUrl: discordWebhookUrl ?? existing.webhooks?.discordWebhookUrl,
+            telegramBotToken: telegramBotToken ?? existing.webhooks?.telegramBotToken,
+            telegramChatId: telegramChatId ?? existing.webhooks?.telegramChatId,
+          },
+        },
+        userId
+      );
+    }
+
+    const results = await sendWebhookNotification({
+      type: 'test',
+      title: 'Teste de Notificação Instantânea',
+      videoUrl: 'https://youtube.com/shorts/demonstracao',
+      platform: 'sistema',
+      account: 'AI Viral Shorts Studio',
+      duration: 45,
+      userId,
+    });
+
+    const hasAnySuccess = results.some((r) => r.success);
+    const hasAnyConfigured = results.length > 0;
+
+    return res.json({
+      success: hasAnySuccess || !hasAnyConfigured,
+      results,
+      message: hasAnySuccess
+        ? 'Notificação enviada com sucesso para o Webhook!'
+        : hasAnyConfigured
+        ? 'Webhook configurado, mas o servidor retornou erro. Verifique a URL ou token.'
+        : 'Nenhum Webhook ativo foi informado.',
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || 'Erro ao testar Webhook.' });
   }
 });
 
