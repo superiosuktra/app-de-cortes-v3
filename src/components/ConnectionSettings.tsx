@@ -266,39 +266,31 @@ export const ConnectionSettings: React.FC<ConnectionSettingsProps> = ({
     }
   }, [credentials]);
 
-  // Listen for postMessage from /api/auth/google/callback popup
+  // Listen for postMessage from /api/auth/google/callback popup with strict origin check
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) {
+        return;
+      }
       if (event.data && event.data.type === 'GOOGLE_OAUTH_SUCCESS') {
         setIsGooglePopupOpen(false);
         setIsConnectingGoogle(false);
-        if (event.data.success && event.data.youtube) {
-          const updated = {
-            ...creds,
-            youtube: {
-              ...creds.youtube,
-              ...event.data.youtube,
-              status: 'connected' as const,
-            },
-          };
-          setCreds(updated);
-          onSaveCredentials(updated);
-          setSaveFeedback(`✅ ${event.data.message || 'Canal conectado via Login do Google!'}`);
-          setTestResults((prev) => ({
-            ...prev,
-            youtube: {
-              success: true,
-              message: `Conectado com sucesso: ${event.data.youtube.channelTitle || 'Canal do YouTube'}!`,
-              details: 'Autenticação Google OAuth 2.0 concluída com Renovação Automática Permanente.',
-            },
-          }));
-          confetti({ particleCount: 60, spread: 70, origin: { y: 0.7 } });
-        }
+        // Refresh masked credentials from server rather than blindly merging untrusted payload
+        authFetch('/api/settings/credentials')
+          .then((r) => r.json())
+          .then((res) => {
+            if (res.credentials) {
+              setCreds((prev) => ({ ...prev, ...res.credentials }));
+            }
+          })
+          .catch(() => {});
+        setSaveFeedback('✅ Canal vinculado via Login do Google com sucesso!');
+        confetti({ particleCount: 60, spread: 70, origin: { y: 0.7 } });
       }
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [creds, onSaveCredentials]);
+  }, []);
 
   // Quick-connect using code, redirect URL, refresh token, or existing server session
   const handleGoogleQuickConnect = async (rawInput?: string, openPopupIfNeeded = false) => {

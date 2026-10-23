@@ -138,6 +138,18 @@ export const EditorTab: React.FC<EditorTabProps> = ({
   };
 
   const handleDownloadRealCut = async () => {
+    // If cut is already rendered, download directly
+    if (selectedCut?.downloadUrl) {
+      const a = document.createElement('a');
+      a.href = selectedCut.downloadUrl;
+      a.download = `${(overlayTitle || 'corte_viral').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 30)}.mp4`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      confetti({ particleCount: 50, spread: 60 });
+      return;
+    }
+
     setIsRenderingCut(true);
     setRenderProgressMsg('Renderizando Gancho Cold-Open (4s) + Corte 1080p com Legenda Limpa...');
     try {
@@ -1182,6 +1194,7 @@ export const EditorTab: React.FC<EditorTabProps> = ({
           <ShortsPhonePreview
             videoId={videoId}
             videoUrl={videoUrl}
+            videoSrc={selectedCut?.previewUrl}
             thumbnailUrl={videoInfo?.thumbnail}
             channelName={videoInfo?.author || 'cortes_virais'}
             startSeconds={startSec}

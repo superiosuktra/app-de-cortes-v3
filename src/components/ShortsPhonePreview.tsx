@@ -457,16 +457,27 @@ export const ShortsPhonePreview: React.FC<ShortsPhonePreviewProps> = ({
 
           {/* VIDEO LAYER: REAL VIDEO / EMBED / POSTER SIMULATOR */}
           {videoSrc ? (
-            /* Direct rendered MP4 playback */
-            <div className="relative z-10 w-full h-full overflow-hidden bg-black flex items-center justify-center">
+            /* Direct rendered MP4 playback with HTML5 seeking and error recovery */
+            <div className="relative z-10 w-full h-full overflow-hidden bg-black flex flex-col items-center justify-center">
               <video
+                key={videoSrc}
                 src={videoSrc}
                 autoPlay
                 loop
+                controls
                 muted={isMuted}
                 playsInline
-                className="w-full h-full object-cover"
+                preload="metadata"
+                className="w-full h-full object-contain bg-black"
+                onError={(e) => {
+                  console.warn('[Player] Falha ao reproduzir vídeo renderizado:', e);
+                }}
               />
+              <div className="absolute top-12 left-3 z-30 pointer-events-none">
+                <span className="px-2 py-0.5 rounded-full bg-emerald-500/90 text-black text-[9px] font-black uppercase tracking-wider shadow">
+                  ● Vídeo Renderizado Real
+                </span>
+              </div>
             </div>
           ) : previewMode === 'embed' ? (
             /* YouTube Embed with Distortion-Free 16:9 Smart Crop & Single Audio Stream */

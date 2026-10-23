@@ -1,12 +1,8 @@
 import fs from 'fs';
 import path from 'path';
-import { exec } from 'child_process';
-import util from 'util';
 import { TEMP_DIR, getSystemFont } from '../config.js';
 import { stateManager } from './stateService.js';
 import { getFfmpegPath, downloadAndProcessYouTubeCut } from './ffmpegService.js';
-
-const execPromise = util.promisify(exec);
 
 export interface RefreshTokenResult {
   success: boolean;
@@ -337,6 +333,7 @@ export async function uploadVideoToYouTube({
   teaserDurationSec,
   teaserText,
   partBadge,
+  userId,
 }: {
   token: string;
   title: string;
@@ -361,6 +358,7 @@ export async function uploadVideoToYouTube({
   teaserDurationSec?: number;
   teaserText?: string;
   partBadge?: string;
+  userId?: string;
 }): Promise<{
   success: boolean;
   videoId?: string;
@@ -380,102 +378,102 @@ export async function uploadVideoToYouTube({
   let createdCutFile = false;
 
   try {
-    const cleanTitle = (title || 'Corte Viral #Shorts').replace(/[\r\n]+/g, ' ').slice(0, 95);
+    const baseTitle = (title || 'Corte Viral').replace(/[\r\n]+/g, ' ').trim();
+    const hasShorts = baseTitle.toLowerCase().includes('#shorts');
+    const cleanTitle = hasShorts ? baseTitle.slice(0, 100) : `${baseTitle.slice(0, 92)} #Shorts`;
     const cleanHook = (hook || 'Se você não dominar sua mente logo cedo...').replace(/[\r\n]+/g, ' ').slice(0, 70);
 
     // 1. If no custom file was provided, but a videoUrl is available, download and process real YouTube cut!
     if (!tmpVideoPath || !fs.existsSync(tmpVideoPath)) {
       if (videoUrl && (videoUrl.includes('youtube.com') || videoUrl.includes('youtu.be') || videoUrl.length === 11)) {
-        try {
-          console.log(`[YouTube Upload] Baixando e processando trecho real do YouTube: ${videoUrl} (${startTime || '00:00'} a ${endTime || '00:30'})...`);
-          tmpVideoPath = await downloadAndProcessYouTubeCut({
-            videoUrl,
-            startTime: startTime || '00:00',
-            endTime: endTime || '00:30',
-            format: format || 'speaker_center',
-            overlayTitle: cleanTitle,
-            hook: cleanHook,
-            framing,
-            subtitles,
-            teaserOffsetSec,
-            teaserDurationSec,
-            teaserText,
-            partBadge,
-          });
-          createdCutFile = true;
-          console.log(`[YouTube Upload] Corte real processado com sucesso: ${tmpVideoPath}`);
-        } catch (downloadErr: any) {
-          console.warn(`[YouTube Upload] Não foi possível cortar diretamente do YouTube (${downloadErr.message}). Utilizando template sintético como contingência.`);
-        }
+        console.log(`[YouTube Upload] Baixando e processando trecho real do YouTube: ${videoUrl} (${startTime || '00:00'} a ${endTime || '00:30'})...`);
+        tmpVideoPath = await downloadAndProcessYouTubeCut({
+          videoUrl,
+          startTime: startTime || '00:00',
+          endTime: endTime || '00:30',
+          format: format || 'speaker_center',
+          overlayTitle: cleanTitle,
+          hook: cleanHook,
+          framing,
+          subtitles,
+          teaserOffsetSec,
+          teaserDurationSec,
+          teaserText,
+          partBadge,
+        });
+        createdCutFile = true;
+        console.log(`[YouTube Upload] Corte real processado com sucesso: ${tmpVideoPath}`);
       }
     }
 
-    // 2. Contingency fallback: If still no file, render a stylized template
     if (!tmpVideoPath || !fs.existsSync(tmpVideoPath)) {
-      tmpVideoPath = path.join(TEMP_DIR, `yt_short_${tmpId}.mp4`);
-      createdCutFile = true;
-      fs.writeFileSync(titleTxtPath, cleanTitle, 'utf8');
-      fs.writeFileSync(hookTxtPath, cleanHook, 'utf8');
-
-      let drawFilters = '';
-      if (fontPath) {
-        const escapedFont = fontPath.replace(/:/g, '\\:').replace(/\\/g, '/');
-        const escapedTitle = titleTxtPath.replace(/:/g, '\\:').replace(/\\/g, '/');
-        const escapedHook = hookTxtPath.replace(/:/g, '\\:').replace(/\\/g, '/');
-        drawFilters = `,drawtext=fontfile='${escapedFont}':textfile='${escapedTitle}':fontcolor=white:fontsize=44:x=(w-text_w)/2:y=430,drawtext=fontfile='${escapedFont}':textfile='${escapedHook}':fontcolor=#fcd34d:fontsize=32:x=(w-text_w)/2:y=520`;
-      }
-
-      await execPromise(
-        `"${ffmpegCmd}" -y -f lavfi -i "color=c=#0f1016:s=1080x1920:d=10" -f lavfi -i "sine=frequency=528:beep_factor=3:duration=10" -filter_complex "[0:v]drawbox=x=60:y=350:w=960:h=300:color=#7c3aed@0.9:t=fill${drawFilters}[v]" -map "[v]" -map 1:a -c:v libx264 -pix_fmt yuv420p -c:a aac -movflags +faststart -t 10 "${tmpVideoPath}"`,
-        { timeout: 35000 }
-      );
+      throw new Error('Não foi possível obter ou processar o vídeo para publicação no YouTube Shorts. Verifique se o vídeo de origem está acessível.');
     }
 
-    const fileBuffer = fs.readFileSync(tmpVideoPath);
-    const boundary = '-------YouTubeBoundary' + tmpId;
+    const stats = fs.statSync(tmpVideoPath);
+    const fileSize = stats.size;
 
-    const metadata = JSON.stringify({
+    const metadata = {
       snippet: {
-        title: cleanTitle.includes('#Shorts') ? cleanTitle : `${cleanTitle} #Shorts`,
+        title: cleanTitle,
         description: description || `${cleanTitle}\n\n#Shorts #Viral`,
         tags: tags.map((t) => t.replace('#', '')),
         categoryId: '22',
       },
       status: {
-        privacyStatus: privacy === 'private' || privacy === 'unlisted' ? privacy : 'public',
+        privacyStatus: privacy === 'public' || privacy === 'unlisted' ? privacy : 'private',
         selfDeclaredMadeForKids: false,
       },
-    });
+    };
 
-    const bodyParts = [
-      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n`,
-      `--${boundary}\r\nContent-Type: video/mp4\r\n\r\n`,
-      fileBuffer,
-      `\r\n--${boundary}--\r\n`,
-    ];
-
-    const fullBody = Buffer.concat([
-      Buffer.from(bodyParts[0]),
-      Buffer.from(bodyParts[1]),
-      fileBuffer,
-      Buffer.from(bodyParts[3]),
-    ]);
-
-    const uploadRes = await fetch(
-      'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=multipart&part=snippet,status',
+    // Resumable upload Step 1: Initiate session
+    const initRes = await fetch(
+      'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status',
       {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
-          'Content-Type': `multipart/related; boundary=${boundary}`,
-          'Content-Length': String(fullBody.length),
+          'Content-Type': 'application/json; charset=UTF-8',
+          'X-Upload-Content-Type': 'video/mp4',
+          'X-Upload-Content-Length': String(fileSize),
         },
-        body: fullBody,
+        body: JSON.stringify(metadata),
       }
     );
 
+    if (!initRes.ok) {
+      const errJson: any = await initRes.json().catch(() => ({}));
+      const errMsg = errJson?.error?.message || initRes.statusText;
+      return {
+        success: false,
+        status: initRes.status,
+        error: errMsg,
+      };
+    }
+
+    const uploadUrl = initRes.headers.get('location');
+    if (!uploadUrl) {
+      return {
+        success: false,
+        status: 500,
+        error: 'URL de upload resumable não retornada pelo YouTube.',
+      };
+    }
+
+    // Resumable upload Step 2: Stream video file from disk
+    const fileStream = fs.createReadStream(tmpVideoPath);
+    const uploadRes = await fetch(uploadUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'video/mp4',
+        'Content-Length': String(fileSize),
+      },
+      body: fileStream as any,
+      duplex: 'half',
+    } as any);
+
     if (!uploadRes.ok) {
-      const errJson = await uploadRes.json().catch(() => ({}));
+      const errJson: any = await uploadRes.json().catch(() => ({}));
       const errMsg = errJson?.error?.message || uploadRes.statusText;
       return {
         success: false,
@@ -489,17 +487,22 @@ export async function uploadVideoToYouTube({
     const channelTitle = uploadData.snippet?.channelTitle || 'Canal do YouTube';
     const channelId = uploadData.snippet?.channelId || '';
 
-    // Update state manager with verified channel info
-    const serverCreds = stateManager.getCredentials();
-    stateManager.updateCredentials({
-      youtube: {
-        ...serverCreds.youtube,
-        status: 'connected',
-        accountName: channelTitle,
-        channelTitle,
-        customUrl: '@' + channelTitle.replace(/\s+/g, '-'),
-      },
-    });
+    // Update state manager with verified channel info if userId is provided
+    if (userId) {
+      const serverCreds = stateManager.getCredentials(userId);
+      stateManager.updateCredentials(
+        {
+          youtube: {
+            ...serverCreds.youtube,
+            status: 'connected',
+            accountName: channelTitle,
+            channelTitle,
+            customUrl: '@' + channelTitle.replace(/\s+/g, '-'),
+          },
+        },
+        userId
+      );
+    }
 
     return {
       success: true,

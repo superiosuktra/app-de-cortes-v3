@@ -1,15 +1,12 @@
-import fs from 'fs';
-import path from 'path';
 import crypto from 'crypto';
-import os from 'os';
-import { STATE_FILE, GEMINI_API_KEY } from '../config.js';
 import db from '../db.js';
 
 // Derive 32-byte AES-256-GCM key for encrypting OAuth tokens at rest
-const VAULT_SECRET =
-  process.env.APP_ENCRYPTION_KEY ||
-  GEMINI_API_KEY ||
-  `${os.hostname()}_${os.userInfo().username}_cortes_vault_v1`;
+if (process.env.NODE_ENV === 'production' && !process.env.APP_ENCRYPTION_KEY) {
+  throw new Error('[Security] Variável de ambiente APP_ENCRYPTION_KEY é obrigatória em produção.');
+}
+
+const VAULT_SECRET = process.env.APP_ENCRYPTION_KEY || 'dev_insecure_cortes_vault_secret_key_32_bytes!';
 const AES_KEY = crypto.scryptSync(VAULT_SECRET, 'cortes_viral_salt_v1', 32);
 const ENC_PREFIX = 'enc:v1:';
 
@@ -22,7 +19,8 @@ function encryptSecret(plainText?: string): string {
     const encrypted = Buffer.concat([cipher.update(plainText, 'utf8'), cipher.final()]);
     const authTag = cipher.getAuthTag();
     return `${ENC_PREFIX}${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted.toString('hex')}`;
-  } catch {
+  } catch (err) {
+    console.error('[Security] Falha ao criptografar segredo:', err);
     return plainText;
   }
 }
@@ -33,26 +31,31 @@ function decryptSecret(cipherText?: string): string {
   try {
     const payload = cipherText.slice(ENC_PREFIX.length);
     const [ivHex, tagHex, dataHex] = payload.split(':');
-    if (!ivHex || !tagHex || !dataHex) return '';
+    if (!ivHex || !tagHex || !dataHex) {
+      console.error('[Security] Formato inválido de segredo cifrado.');
+      return cipherText;
+    }
     const decipher = crypto.createDecipheriv('aes-256-gcm', AES_KEY, Buffer.from(ivHex, 'hex'));
     decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
     const decrypted = Buffer.concat([decipher.update(Buffer.from(dataHex, 'hex')), decipher.final()]);
     return decrypted.toString('utf8');
-  } catch {
-    return '';
+  } catch (err) {
+    console.error('[Security] Falha na descriptografia do segredo:', err);
+    // Return original cipherText rather than empty string so secret is not silently destroyed
+    return cipherText;
   }
 }
 
 function cleanDecryptedSecret(val?: string): string {
   const s = decryptSecret(val);
-  if (s.startsWith('***')) return '';
+  if (s.startsWith('***') || s.includes('••••')) return '';
   return s;
 }
 
 function preserveRealSecret(incoming?: string, existing?: string, status?: string): string {
   if (typeof incoming !== 'string') return existing || '';
   const trimmed = incoming.trim();
-  if (trimmed.startsWith('***')) {
+  if (trimmed.startsWith('***') || trimmed.includes('••••')) {
     return existing || '';
   }
   if (!trimmed && status === 'connected' && existing) {
@@ -73,6 +76,7 @@ function decryptCredentialsObject(creds: any): PersistedCredentials {
   yt.accessToken = cleanDecryptedSecret(yt.accessToken);
   yt.refreshToken = cleanDecryptedSecret(yt.refreshToken);
   yt.clientSecret = cleanDecryptedSecret(yt.clientSecret);
+  if (yt.cookies) yt.cookies = cleanDecryptedSecret(yt.cookies);
 
   ig.accessToken = cleanDecryptedSecret(ig.accessToken);
   ig.appSecret = cleanDecryptedSecret(ig.appSecret);
@@ -90,6 +94,12 @@ function decryptCredentialsObject(creds: any): PersistedCredentials {
     gm.model = 'gemini-3.8-flash';
   }
 
+  if (wh.discordWebhookUrl) wh.discordWebhookUrl = cleanDecryptedSecret(wh.discordWebhookUrl);
+  if (wh.telegramBotToken) wh.telegramBotToken = cleanDecryptedSecret(wh.telegramBotToken);
+
+  if (ai.openaiApiKey) ai.openaiApiKey = cleanDecryptedSecret(ai.openaiApiKey);
+  if (ai.anthropicApiKey) ai.anthropicApiKey = cleanDecryptedSecret(ai.anthropicApiKey);
+
   return { youtube: yt, instagram: ig, tiktok: tt, kwai: kw, gemini: gm, webhooks: wh, aiConfig: ai };
 }
 
@@ -100,6 +110,7 @@ function encryptCredentialsObject(creds: PersistedCredentials): PersistedCredent
       accessToken: encryptSecret(creds.youtube.accessToken),
       refreshToken: encryptSecret(creds.youtube.refreshToken),
       clientSecret: encryptSecret(creds.youtube.clientSecret),
+      cookies: creds.youtube.cookies ? encryptSecret(creds.youtube.cookies) : undefined,
     },
     instagram: {
       ...creds.instagram,
@@ -124,8 +135,20 @@ function encryptCredentialsObject(creds: PersistedCredentials): PersistedCredent
           apiKey: encryptSecret(creds.gemini.apiKey),
         }
       : undefined,
-    webhooks: creds.webhooks,
-    aiConfig: creds.aiConfig,
+    webhooks: creds.webhooks
+      ? {
+          ...creds.webhooks,
+          discordWebhookUrl: creds.webhooks.discordWebhookUrl ? encryptSecret(creds.webhooks.discordWebhookUrl) : undefined,
+          telegramBotToken: creds.webhooks.telegramBotToken ? encryptSecret(creds.webhooks.telegramBotToken) : undefined,
+        }
+      : undefined,
+    aiConfig: creds.aiConfig
+      ? {
+          ...creds.aiConfig,
+          openaiApiKey: creds.aiConfig.openaiApiKey ? encryptSecret(creds.aiConfig.openaiApiKey) : undefined,
+          anthropicApiKey: creds.aiConfig.anthropicApiKey ? encryptSecret(creds.aiConfig.anthropicApiKey) : undefined,
+        }
+      : undefined,
   };
 }
 
@@ -270,12 +293,7 @@ class StateManager {
   private userStates = new Map<string, PersistedState>();
   private saveTimeouts = new Map<string, NodeJS.Timeout>();
 
-  constructor() {
-    this.getState('default');
-  }
-
   private loadUserState(userId: string): PersistedState {
-    // 1. Try SQLite user_states first
     try {
       const row = db.prepare('SELECT * FROM user_states WHERE user_id = ?').get(userId) as any;
       if (row) {
@@ -304,31 +322,11 @@ class StateManager {
       console.warn(`[StateService] Aviso ao carregar SQLite para usuário ${userId}:`, e);
     }
 
-    // 2. If 'default' user, fall back to STATE_FILE
-    if (userId === 'default') {
-      try {
-        if (fs.existsSync(STATE_FILE)) {
-          const content = fs.readFileSync(STATE_FILE, 'utf-8');
-          const parsed = JSON.parse(content);
-          return {
-            credentials: decryptCredentialsObject(parsed.credentials),
-            savedCuts: Array.isArray(parsed.savedCuts) ? parsed.savedCuts : [],
-            viralCuts: Array.isArray(parsed.viralCuts) ? parsed.viralCuts : undefined,
-            queue: Array.isArray(parsed.queue) ? parsed.queue : [],
-            autoPostSettings: parsed.autoPostSettings || null,
-            lastUpdated: parsed.lastUpdated || new Date().toISOString(),
-          };
-        }
-      } catch (err) {
-        console.warn('[StateService] Falha ao carregar estado do arquivo JSON:', err);
-      }
-    }
-
     return JSON.parse(JSON.stringify(DEFAULT_STATE));
   }
 
-  public getState(userId: string = 'default'): PersistedState {
-    const key = userId || 'default';
+  public getState(userId: string): PersistedState {
+    const key = userId || 'anonymous';
     if (!this.userStates.has(key)) {
       const state = this.loadUserState(key);
       this.userStates.set(key, state);
@@ -336,12 +334,12 @@ class StateManager {
     return this.userStates.get(key)!;
   }
 
-  public getCredentials(userId: string = 'default'): PersistedCredentials {
+  public getCredentials(userId: string): PersistedCredentials {
     return this.getState(userId).credentials;
   }
 
-  public updateCredentials(creds: Partial<PersistedCredentials>, userId: string = 'default'): void {
-    const key = userId || 'default';
+  public updateCredentials(creds: Partial<PersistedCredentials>, userId: string): void {
+    const key = userId || 'anonymous';
     const state = this.getState(key);
     if (creds.youtube) {
       const prevYt = state.credentials.youtube;
@@ -354,12 +352,6 @@ class StateManager {
         clientSecret: preserveRealSecret(creds.youtube.clientSecret, prevYt.clientSecret, nextStatus),
         cookies: creds.youtube.cookies !== undefined ? creds.youtube.cookies : prevYt.cookies,
       };
-      if (creds.youtube.cookies) {
-        try {
-          const cookiePath = path.join(process.cwd(), 'data', 'cookies.txt');
-          fs.writeFileSync(cookiePath, creds.youtube.cookies, 'utf-8');
-        } catch {}
-      }
     }
     if (creds.instagram) {
       const prevIg = state.credentials.instagram;
@@ -381,130 +373,127 @@ class StateManager {
         clientSecret: preserveRealSecret(creds.tiktok.clientSecret, prevTt.clientSecret, nextStatus),
       };
     }
+    if (creds.kwai) {
+      const prevKw = state.credentials.kwai || ({} as any);
+      const nextStatus = creds.kwai.status || prevKw.status;
+      state.credentials.kwai = {
+        ...prevKw,
+        ...creds.kwai,
+        accessToken: preserveRealSecret(creds.kwai.accessToken, prevKw.accessToken, nextStatus),
+        appSecret: preserveRealSecret(creds.kwai.appSecret, prevKw.appSecret, nextStatus),
+      };
+    }
     if (creds.gemini) {
-      const prevGm = state.credentials.gemini || DEFAULT_STATE.credentials.gemini!;
-      const nextStatus = creds.gemini.status || prevGm.status;
+      const prevGm = state.credentials.gemini || ({} as any);
       state.credentials.gemini = {
         ...prevGm,
         ...creds.gemini,
-        apiKey: preserveRealSecret(creds.gemini.apiKey, prevGm.apiKey, nextStatus),
-        model:
-          !creds.gemini.model || creds.gemini.model.includes('gemini-2.5')
-            ? 'gemini-3.8-flash'
-            : creds.gemini.model,
-      };
-    }
-    if (creds.aiConfig) {
-      const prevAi = state.credentials.aiConfig || DEFAULT_STATE.credentials.aiConfig!;
-      state.credentials.aiConfig = {
-        ...prevAi,
-        ...creds.aiConfig,
+        apiKey: preserveRealSecret(creds.gemini.apiKey, prevGm.apiKey, creds.gemini.status),
       };
     }
     if (creds.webhooks) {
       state.credentials.webhooks = {
-        ...state.credentials.webhooks,
+        ...(state.credentials.webhooks || {}),
         ...creds.webhooks,
       };
     }
+    if (creds.aiConfig) {
+      state.credentials.aiConfig = {
+        ...(state.credentials.aiConfig || {}),
+        ...creds.aiConfig,
+      };
+    }
+
     this.scheduleSave(key);
   }
 
-  public clearCredentials(platform?: 'youtube' | 'instagram' | 'tiktok' | 'gemini', userId: string = 'default'): void {
-    const key = userId || 'default';
+  public updateFullState(full: Partial<PersistedState>, userId: string): void {
+    const key = userId || 'anonymous';
     const state = this.getState(key);
-    if (platform && state.credentials[platform]) {
-      state.credentials[platform] = { ...DEFAULT_STATE.credentials[platform] } as any;
+
+    if (full.savedCuts !== undefined) state.savedCuts = full.savedCuts;
+    if (full.viralCuts !== undefined) state.viralCuts = full.viralCuts;
+    if (full.queue !== undefined) state.queue = full.queue;
+    if (full.autoPostSettings !== undefined) state.autoPostSettings = full.autoPostSettings;
+    if (full.credentials) {
+      this.updateCredentials(full.credentials, key);
     } else {
-      state.credentials = JSON.parse(JSON.stringify(DEFAULT_STATE.credentials));
+      this.scheduleSave(key);
     }
-    this.scheduleSave(key);
   }
 
-  public updateFullState(partial: Partial<PersistedState>, userId: string = 'default'): void {
-    const key = userId || 'default';
-    const state = this.getState(key);
-    if (Array.isArray(partial.savedCuts)) {
-      state.savedCuts = partial.savedCuts;
+  public clearCredentials(platform: string, userId: string): void {
+    const ALLOWED = new Set(['youtube', 'instagram', 'tiktok', 'kwai', 'gemini']);
+    if (!ALLOWED.has(platform)) {
+      throw new Error(`Plataforma inválida para exclusão de credenciais: ${platform}`);
     }
-    if (Array.isArray(partial.viralCuts)) {
-      state.viralCuts = partial.viralCuts;
+    const state = this.getState(userId);
+    if (platform === 'youtube') {
+      state.credentials.youtube = { ...DEFAULT_STATE.credentials.youtube };
+    } else if (platform === 'instagram') {
+      state.credentials.instagram = { ...DEFAULT_STATE.credentials.instagram };
+    } else if (platform === 'tiktok') {
+      state.credentials.tiktok = { ...DEFAULT_STATE.credentials.tiktok };
+    } else if (platform === 'kwai') {
+      state.credentials.kwai = {
+        accessToken: '',
+        appId: '',
+        appSecret: '',
+        status: 'disconnected',
+        accountName: '',
+        avatar: '',
+        verifiedAt: '',
+      };
+    } else if (platform === 'gemini') {
+      state.credentials.gemini = { ...DEFAULT_STATE.credentials.gemini };
     }
-    if (Array.isArray(partial.queue)) {
-      state.queue = partial.queue;
-    }
-    if (partial.autoPostSettings !== undefined) {
-      state.autoPostSettings = partial.autoPostSettings;
-    }
-    if (partial.credentials) {
-      this.updateCredentials(partial.credentials, key);
-    }
-    this.scheduleSave(key);
+    this.scheduleSave(userId);
   }
 
-  private scheduleSave(userId: string = 'default'): void {
-    const key = userId || 'default';
-    const state = this.getState(key);
-    state.lastUpdated = new Date().toISOString();
+  private scheduleSave(userId: string): void {
+    const existing = this.saveTimeouts.get(userId);
+    if (existing) clearTimeout(existing);
 
-    const existingTimeout = this.saveTimeouts.get(key);
-    if (existingTimeout) {
-      clearTimeout(existingTimeout);
-    }
-
-    const timeout = setTimeout(() => {
-      this.saveToDisk(key);
-      this.saveTimeouts.delete(key);
-    }, 300);
-
-    this.saveTimeouts.set(key, timeout);
+    this.saveTimeouts.set(
+      userId,
+      setTimeout(() => {
+        this.saveNow(userId);
+      }, 500)
+    );
   }
 
-  public saveToDisk(userId: string = 'default'): void {
-    const key = userId || 'default';
-    const state = this.getState(key);
-    const encryptedCreds = encryptCredentialsObject(state.credentials);
+  private saveNow(userId: string): void {
+    const state = this.userStates.get(userId);
+    if (!state) return;
 
-    // 1. Save to SQLite user_states
     try {
+      const encryptedCreds = encryptCredentialsObject(state.credentials);
+      const settingsPayload = JSON.stringify({
+        __wrapped: true,
+        autoPostSettings: state.autoPostSettings,
+        viralCuts: state.viralCuts,
+      });
+
       db.prepare(`
         INSERT INTO user_states (user_id, credentials_json, saved_cuts_json, queue_json, settings_json, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(user_id) DO UPDATE SET
           credentials_json = excluded.credentials_json,
           saved_cuts_json = excluded.saved_cuts_json,
           queue_json = excluded.queue_json,
           settings_json = excluded.settings_json,
-          updated_at = excluded.updated_at
+          updated_at = CURRENT_TIMESTAMP
       `).run(
-        key,
+        userId,
         JSON.stringify(encryptedCreds),
-        JSON.stringify(state.savedCuts),
-        JSON.stringify(state.queue),
-        JSON.stringify({
-          __wrapped: true,
-          autoPostSettings: state.autoPostSettings,
-          viralCuts: state.viralCuts,
-        }),
-        state.lastUpdated
+        JSON.stringify(state.savedCuts || []),
+        JSON.stringify(state.queue || []),
+        settingsPayload
       );
-    } catch (err) {
-      console.error(`[StateService] Erro ao gravar estado do usuário ${key} no SQLite:`, err);
-    }
 
-    // 2. If 'default', also write to STATE_FILE for backwards compatibility
-    if (key === 'default') {
-      try {
-        const stateToPersist: PersistedState = {
-          ...state,
-          credentials: encryptedCreds,
-        };
-        const tempPath = `${STATE_FILE}.tmp`;
-        fs.writeFileSync(tempPath, JSON.stringify(stateToPersist, null, 2), 'utf-8');
-        fs.renameSync(tempPath, STATE_FILE);
-      } catch (err) {
-        console.error('[StateService] Erro ao gravar arquivo de estado no disco:', err);
-      }
+      state.lastUpdated = new Date().toISOString();
+    } catch (e) {
+      console.error(`[StateService] Falha ao persistir estado para usuário ${userId}:`, e);
     }
   }
 }

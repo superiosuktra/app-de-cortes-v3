@@ -14,13 +14,21 @@ import {
   sendWebhookNotification,
 } from '../services/socialService.js';
 import { stateManager } from '../services/stateService.js';
+import {
+  normalizeSafeYouTubeUrl,
+  validateCutInterval,
+  sanitizeTimestamp,
+} from '../middleware/security.js';
 
 export const socialRouter = Router();
 
 // 1. Unified Social Media Post Endpoint (YouTube, Instagram, TikTok)
 socialRouter.post('/post-social', async (req: Request, res: Response) => {
   try {
-    const userId = req.userId || 'default';
+    const userId = req.userId;
+    if (!userId) {
+      return res.status(401).json({ error: 'Acesso não autorizado. Faça login para continuar.' });
+    }
     const {
       platform,
       token,
@@ -29,6 +37,7 @@ socialRouter.post('/post-social', async (req: Request, res: Response) => {
       clientSecret,
       title,
       caption,
+      tags: rawTags,
       privacy = 'public',
       videoUrl,
       startTime,
@@ -45,6 +54,24 @@ socialRouter.post('/post-social', async (req: Request, res: Response) => {
     if (!platform) {
       return res.status(400).json({ error: 'Plataforma não especificada.' });
     }
+
+    if (videoUrl) {
+      const safe = normalizeSafeYouTubeUrl(videoUrl);
+      if (!safe) {
+        return res.status(400).json({ error: 'URL do vídeo é inválida.' });
+      }
+    }
+    if (startTime && endTime) {
+      try {
+        validateCutInterval(startTime, endTime);
+      } catch (err: any) {
+        return res.status(400).json({ error: err.message || 'Intervalo de tempo inválido.' });
+      }
+    }
+
+    const effectiveTags = Array.isArray(rawTags) && rawTags.length > 0
+      ? rawTags.map((t: string) => String(t).trim().replace(/^#/, ''))
+      : ['Shorts', 'Viral'];
 
     const serverCreds = stateManager.getCredentials(userId);
     const rawIncomingToken = (token || '').trim();
@@ -75,6 +102,9 @@ socialRouter.post('/post-social', async (req: Request, res: Response) => {
       }
 
       if (cleanToken.startsWith('demo_') || cleanToken === 'demo-youtube-token') {
+        if (process.env.NODE_ENV === 'production') {
+          return res.status(403).json({ error: 'Modo de demonstração indisponível em ambiente de produção.' });
+        }
         return res.json({
           success: true,
           platform: 'youtube',
@@ -121,7 +151,7 @@ socialRouter.post('/post-social', async (req: Request, res: Response) => {
         title: title || 'Corte Viral',
         description: caption || '',
         privacy,
-        tags: ['Shorts', 'Viral', 'Produtividade'],
+        tags: effectiveTags,
         videoUrl,
         startTime,
         endTime,
@@ -162,7 +192,7 @@ socialRouter.post('/post-social', async (req: Request, res: Response) => {
             title: title || 'Corte Viral',
             description: caption || '',
             privacy,
-            tags: ['Shorts', 'Viral', 'Produtividade'],
+            tags: effectiveTags,
             videoUrl,
             startTime,
             endTime,
@@ -186,6 +216,13 @@ socialRouter.post('/post-social', async (req: Request, res: Response) => {
               publishedAt: new Date().toISOString(),
             });
           }
+          return res.status(retryUpload.status || 500).json({
+            error: `Erro ao enviar para o YouTube após renovação do token (${retryUpload.status}): ${retryUpload.error || 'Falha no envio'}`,
+          });
+        } else {
+          return res.status(401).json({
+            error: `Falha ao renovar token de acesso do YouTube: ${refreshed.error || 'Token inválido'}`,
+          });
         }
       }
 
@@ -233,13 +270,41 @@ socialRouter.post('/post-social', async (req: Request, res: Response) => {
 // 2. Direct Post to YouTube Shorts
 socialRouter.post('/post-youtube', async (req: Request, res: Response) => {
   try {
-    const userId = req.userId || 'default';
-    const { accessToken, refreshToken, clientId, clientSecret, title, description, privacy = 'private', hook, videoUrl, startTime, endTime, format } = req.body;
+    const userId = req.userId;
+    if (!userId) {
+      return res.status(401).json({ error: 'Acesso não autorizado. Faça login para continuar.' });
+    }
+    const { accessToken, refreshToken, clientId, clientSecret, title, description, tags: ytTags, privacy = 'private', hook, videoUrl, startTime, endTime, format } = req.body;
+
+    if (videoUrl) {
+      const safe = normalizeSafeYouTubeUrl(videoUrl);
+      if (!safe) {
+        return res.status(400).json({ error: 'URL do vídeo é inválida.' });
+      }
+    }
+    if (startTime && endTime) {
+      try {
+        validateCutInterval(startTime, endTime);
+      } catch (err: any) {
+        return res.status(400).json({ error: err.message || 'Intervalo de tempo inválido.' });
+      }
+    }
+
+    const effectiveYtTags = Array.isArray(ytTags) && ytTags.length > 0
+      ? ytTags.map((t: string) => String(t).trim().replace(/^#/, ''))
+      : ['Shorts', 'Viral'];
+
     const serverCreds = stateManager.getCredentials(userId);
 
     const rawAt = (accessToken || '').trim();
     const isMaskedAt = !rawAt || rawAt.startsWith('***') || rawAt.includes('••••');
     let tokenToUse = (isMaskedAt ? serverCreds.youtube.accessToken : rawAt || '').trim();
+
+    if (tokenToUse.startsWith('demo_') || tokenToUse === 'demo-youtube-token') {
+      if (process.env.NODE_ENV === 'production') {
+        return res.status(403).json({ error: 'Modo de demonstração indisponível em ambiente de produção.' });
+      }
+    }
 
     const rawRt = (refreshToken || '').trim();
     const cleanRt = rawRt.startsWith('***') || rawRt.includes('••••') ? '' : rawRt;
@@ -271,6 +336,7 @@ socialRouter.post('/post-youtube', async (req: Request, res: Response) => {
       title,
       description,
       privacy,
+      tags: effectiveYtTags,
       hook,
       videoUrl,
       startTime,
@@ -604,7 +670,11 @@ socialRouter.post('/exchange-code/youtube', async (req: Request, res: Response) 
 // 8. 1-Click Quick Connect / Auto-Heal Endpoint (/api/auth/google/quick-connect)
 socialRouter.post('/auth/google/quick-connect', async (req: Request, res: Response) => {
   try {
-    const userId = req.userId || 'default';
+    const userId = req.userId;
+    if (!userId) {
+      return res.status(401).json({ error: 'Não autenticado. Faça login para continuar.' });
+    }
+
     const { input } = req.body || {};
     const serverCreds = stateManager.getCredentials(userId);
     const rawInput = (input || '').trim();
@@ -619,8 +689,8 @@ socialRouter.post('/auth/google/quick-connect', async (req: Request, res: Respon
         const latest = stateManager.getCredentials(userId).youtube;
         return res.json({
           success: true,
-          youtube: latest,
-          accountName: latest.channelTitle || refreshed.channelName,
+          status: latest.status,
+          channelName: latest.channelTitle || refreshed.channelName,
           avatar: latest.avatar || refreshed.avatar,
           customUrl: latest.customUrl || refreshed.customUrl,
           message: `Canal "${latest.channelTitle || refreshed.channelName}" reconectado automaticamente com 1 clique!`,
@@ -644,8 +714,8 @@ socialRouter.post('/auth/google/quick-connect', async (req: Request, res: Respon
           const latest = stateManager.getCredentials(userId).youtube;
           return res.json({
             success: true,
-            youtube: latest,
-            accountName: latest.channelTitle || exchanged.channelName,
+            status: latest.status,
+            channelName: latest.channelTitle || exchanged.channelName,
             avatar: latest.avatar || exchanged.avatar,
             customUrl: latest.customUrl || exchanged.customUrl,
             message: exchanged.message,
@@ -663,8 +733,8 @@ socialRouter.post('/auth/google/quick-connect', async (req: Request, res: Respon
           const latest = stateManager.getCredentials(userId).youtube;
           return res.json({
             success: true,
-            youtube: latest,
-            accountName: latest.channelTitle || refreshed.channelName,
+            status: latest.status,
+            channelName: latest.channelTitle || refreshed.channelName,
             avatar: latest.avatar || refreshed.avatar,
             customUrl: latest.customUrl || refreshed.customUrl,
             message: `Canal "${latest.channelTitle || refreshed.channelName}" conectado permanentemente!`,

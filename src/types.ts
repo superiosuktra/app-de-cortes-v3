@@ -74,6 +74,48 @@ export interface ViralCut {
   retentionStrategyOption?: 1 | 2 | 3;
   removeSilence?: boolean;
   autoBRoll?: boolean;
+  category?: string;
+  renderStatus?: 'pending' | 'queued' | 'rendering' | 'completed' | 'failed';
+  renderProgress?: number;
+  renderError?: string;
+  previewUrl?: string;
+  downloadUrl?: string;
+  fileSize?: number;
+  videoFilePath?: string;
+}
+
+export interface ClipGenerationConfig {
+  targetCount: number;
+  minDuration: number;
+  maxDuration: number;
+  language: string;
+  topic?: string;
+  style?: string;
+  platform?: SocialPlatform;
+  avoidDuplicates?: boolean;
+  includeIntro?: boolean;
+  includeStorytelling?: boolean;
+  includeControversialMoments?: boolean;
+  includeEducationalMoments?: boolean;
+  includeHumor?: boolean;
+  includeQuestions?: boolean;
+  includeCallsToAction?: boolean;
+}
+
+export interface BatchRenderJob {
+  id: string;
+  type: 'render' | 'zip';
+  status: 'queued' | 'downloading' | 'transcribing' | 'analyzing' | 'rendering' | 'packaging' | 'completed' | 'failed' | 'cancelled';
+  progress: number;
+  currentStep?: string;
+  totalItems: number;
+  completedItems: number;
+  failedItems: number;
+  itemIds: string[];
+  zipDownloadUrl?: string;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface WebhookConfig {

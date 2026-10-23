@@ -76,8 +76,24 @@ videoRouter.post('/trending', handleTrending);
 async function handleAnalyze(req: Request, res: Response) {
   try {
     const { videoUrl, transcript, userPrompt, intent, videoTitle, channelName, cutsCount } = req.body;
+    if (!videoUrl || typeof videoUrl !== 'string' || !videoUrl.trim()) {
+      return res.status(400).json({ error: 'URL do vídeo é obrigatória.' });
+    }
+
     const safeYt = normalizeSafeYouTubeUrl(videoUrl);
-    const cleanUrl = safeYt?.canonicalUrl || videoUrl || 'https://www.youtube.com/watch?v=B57eOqeLVfc';
+    if (!safeYt) {
+      return res.status(400).json({ error: 'URL do YouTube inválida ou malformada.' });
+    }
+    const cleanUrl = safeYt.canonicalUrl;
+
+    let validCutsCount = 6;
+    if (cutsCount !== undefined) {
+      const parsed = Number(cutsCount);
+      if (!Number.isFinite(parsed) || parsed < 1 || parsed > 12) {
+        return res.status(400).json({ error: 'cutsCount deve ser um número finito entre 1 e 12.' });
+      }
+      validCutsCount = Math.floor(parsed);
+    }
 
     const cuts = await analyzeViralCuts({
       videoUrl: cleanUrl,
@@ -86,7 +102,7 @@ async function handleAnalyze(req: Request, res: Response) {
       intent,
       videoTitle,
       channelName,
-      cutsCount: cutsCount ? Number(cutsCount) : 6,
+      cutsCount: validCutsCount,
       userId: req.userId,
     });
 
@@ -107,10 +123,19 @@ videoRouter.post('/generate-cuts', aiRateLimiter, handleAnalyze);
 videoRouter.post('/analyze-framing', aiRateLimiter, async (req: Request, res: Response) => {
   try {
     const { videoUrl, videoId, videoTitle, title } = req.body;
-    const safeYt = normalizeSafeYouTubeUrl(videoUrl || videoId);
+    const rawTarget = videoUrl || (videoId ? `https://www.youtube.com/watch?v=${videoId}` : '');
+    if (!rawTarget || typeof rawTarget !== 'string' || !rawTarget.trim()) {
+      return res.status(400).json({ error: 'URL ou ID do vídeo é obrigatório.' });
+    }
+
+    const safeYt = normalizeSafeYouTubeUrl(rawTarget);
+    if (!safeYt) {
+      return res.status(400).json({ error: 'URL ou ID do YouTube inválido.' });
+    }
+
     const framing = await analyzeVideoFraming({
-      videoUrl: safeYt?.canonicalUrl || videoUrl,
-      videoId: safeYt?.videoId || extractVideoId(videoId || videoUrl || '') || 'B57eOqeLVfc',
+      videoUrl: safeYt.canonicalUrl,
+      videoId: safeYt.videoId,
       videoTitle: videoTitle || title,
       userId: req.userId,
     });
@@ -148,9 +173,16 @@ videoRouter.post('/generate-caption', aiRateLimiter, async (req: Request, res: R
 videoRouter.post('/ffmpeg-command', (req: Request, res: Response) => {
   try {
     const { videoUrl, startTime, endTime, format, title, framing } = req.body;
+    if (!videoUrl || typeof videoUrl !== 'string' || !videoUrl.trim()) {
+      return res.status(400).json({ error: 'URL do vídeo é obrigatória.' });
+    }
     const safeYt = normalizeSafeYouTubeUrl(videoUrl);
+    if (!safeYt) {
+      return res.status(400).json({ error: 'URL do YouTube inválida ou malformada.' });
+    }
+
     const result = generateFfmpegCommand({
-      videoUrl: safeYt?.canonicalUrl || 'https://www.youtube.com/watch?v=B57eOqeLVfc',
+      videoUrl: safeYt.canonicalUrl,
       startTime: sanitizeTimestamp(startTime, '00:00'),
       endTime: sanitizeTimestamp(endTime, '00:45'),
       format,
@@ -184,27 +216,13 @@ videoRouter.post('/gemini/verify', async (req: Request, res: Response) => {
       },
     });
 
-    let modelToUse = GEMINI_TEXT_MODEL;
-    let response;
-    try {
-      response = await testAi.models.generateContent({
-        model: modelToUse,
-        contents: 'Responda apenas: OK',
-      });
-    } catch (modelErr: any) {
-      if (modelErr?.message?.includes('is no longer available') || modelErr?.message?.includes('404')) {
-        modelToUse = 'gemini-3.8-flash';
-        response = await testAi.models.generateContent({
-          model: modelToUse,
-          contents: 'Responda apenas: OK',
-        });
-      } else {
-        throw modelErr;
-      }
-    }
+    const modelToUse = GEMINI_TEXT_MODEL;
+    const response = await testAi.models.generateContent({
+      model: modelToUse,
+      contents: 'Responda apenas: OK',
+    });
 
     if (response?.text) {
-      process.env.GEMINI_API_KEY = keyToTest;
       stateManager.updateCredentials(
         {
           gemini: {
@@ -213,12 +231,12 @@ videoRouter.post('/gemini/verify', async (req: Request, res: Response) => {
             model: modelToUse,
           },
         },
-        req.userId || 'default'
+        req.userId
       );
       return res.json({
         valid: true,
         model: modelToUse,
-        message: 'Chave do Google AI Studio validada com sucesso! Todos os recursos de IA foram ativados com Gemini 3.8 Flash.',
+        message: `Chave do Google AI Studio validada com sucesso! Recursos ativados com o modelo ${modelToUse}.`,
       });
     }
 
@@ -244,17 +262,55 @@ videoRouter.get('/gemini/status', (req: Request, res: Response) => {
   });
 });
 
-// 9. Test Local AI (Ollama / LM Studio) Endpoint
+// 9. Test Local AI (Ollama / LM Studio) Endpoint with SSRF Protection
 videoRouter.post('/ai/test-local', async (req: Request, res: Response) => {
-  const endpoint = String(req.body?.endpoint || 'http://localhost:11434').trim().replace(/\/$/, '');
+  if (!req.userId) {
+    return res.status(401).json({ error: 'Não autenticado.' });
+  }
+
+  const rawEndpoint = String(req.body?.endpoint || 'http://localhost:11434').trim().replace(/\/$/, '');
   const model = String(req.body?.model || 'llama3:8b').trim();
+
+  // Validate URL and enforce SSRF defenses
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(rawEndpoint);
+  } catch {
+    return res.status(400).json({ success: false, error: 'URL do endpoint inválida.' });
+  }
+
+  if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+    return res.status(400).json({ success: false, error: 'Protocolo inválido. Apenas http e https são permitidos.' });
+  }
+
+  const hostname = parsedUrl.hostname.toLowerCase();
+  const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+
+  if (process.env.NODE_ENV === 'production') {
+    // In production, block loopback, link-local, private subnets, and cloud metadata
+    if (
+      isLocalhost ||
+      hostname.startsWith('10.') ||
+      hostname.startsWith('192.168.') ||
+      hostname.startsWith('172.') ||
+      hostname.startsWith('169.254.') ||
+      hostname.includes('metadata')
+    ) {
+      return res.status(400).json({ success: false, error: 'Conexões para endereços de rede privada ou metadados são proibidas.' });
+    }
+  } else {
+    // In dev, only permit loopback connections
+    if (!isLocalhost) {
+      return res.status(400).json({ success: false, error: 'Em ambiente local, apenas conexões para localhost ou 127.0.0.1 são permitidas.' });
+    }
+  }
 
   const startTime = Date.now();
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 4000);
 
   try {
-    const tagsRes = await fetch(`${endpoint}/api/tags`, {
+    const tagsRes = await fetch(`${parsedUrl.origin}/api/tags`, {
       method: 'GET',
       signal: controller.signal,
     });
@@ -264,7 +320,7 @@ videoRouter.post('/ai/test-local', async (req: Request, res: Response) => {
     if (!tagsRes.ok) {
       return res.status(400).json({
         success: false,
-        error: `Ollama respondeu com status ${tagsRes.status}. Verifique se o endpoint está correto.`,
+        error: `Serviço local respondeu com status ${tagsRes.status}.`,
       });
     }
 
@@ -276,21 +332,21 @@ videoRouter.post('/ai/test-local', async (req: Request, res: Response) => {
     return res.json({
       success: true,
       latencyMs,
-      endpoint,
+      endpoint: parsedUrl.origin,
       models,
       hasRequestedModel: models.some((m) => m.toLowerCase().includes(model.toLowerCase())),
-      message: `Conectado com sucesso ao Ollama local (${latencyMs}ms)! ${models.length} modelo(s) encontrado(s).`,
+      message: `Conectado com sucesso ao provedor local (${latencyMs}ms)! ${models.length} modelo(s) encontrado(s).`,
     });
   } catch (err: any) {
     clearTimeout(timeoutId);
     const latencyMs = Date.now() - startTime;
-    const isTimeout = err.name === 'AbortError';
+    const isTimeout = err?.name === 'AbortError';
     return res.status(502).json({
       success: false,
       latencyMs,
       error: isTimeout
-        ? `Tempo limite excedido (4s) ao tentar conectar em ${endpoint}. Verifique se o Ollama está rodando ('ollama serve').`
-        : `Não foi possível conectar em ${endpoint}: ${err.message || 'Serviço offline'}. Certifique-se de que o Ollama ou servidor local está ativo.`,
+        ? 'Tempo limite de conexão excedido (4s). Verifique se o serviço local está em execução.'
+        : 'Não foi possível conectar ao provedor local. Certifique-se de que o serviço está ativo.',
     });
   }
 });

@@ -1,21 +1,24 @@
 {
-  "name": "react-example",
+  "name": "ai-viral-shorts-cutter",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "start": "node server.ts",
-    "build": "vite build",
+    "build": "vite build && npm run build:server",
+    "build:server": "esbuild server.ts --platform=node --bundle --format=esm --packages=external --outfile=dist/server.js",
+    "start": "NODE_ENV=production node dist/server.js",
     "preview": "vite preview",
-    "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "clean": "node -e \"const fs=require('fs'); fs.rmSync('dist',{recursive:true,force:true}); fs.rmSync('server.js',{force:true});\"",
+    "lint": "tsc --noEmit",
+    "test": "tsx --test $(find server -name '*.test.ts')"
   },
   "dependencies": {
     "@distube/ytdl-core": "^5.0.1",
     "@google/genai": "^2.4.0",
     "@tailwindcss/vite": "^4.3.3",
     "@vitejs/plugin-react": "^6.1.1",
+    "archiver": "^8.0.0",
     "canvas-confetti": "^1.9.4",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
@@ -29,6 +32,7 @@
     "zustand": "^5.0.16"
   },
   "devDependencies": {
+    "@types/archiver": "^8.0.0",
     "@types/canvas-confetti": "^1.9.0",
     "@types/express": "^4.17.21",
     "@types/multer": "^2.3.0",

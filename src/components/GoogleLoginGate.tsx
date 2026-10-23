@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Flame, Sparkles, ShieldCheck, Zap, Lock, Key, ArrowRight, UserCheck, AlertCircle } from 'lucide-react';
+import { Flame, ShieldCheck, Lock, Zap, Key, UserCheck, AlertCircle } from 'lucide-react';
 import { AuthUser } from '../types';
 import { fetchJson, setAuthToken } from '../utils/api';
 
@@ -10,12 +10,15 @@ interface GoogleLoginGateProps {
 export const GoogleLoginGate: React.FC<GoogleLoginGateProps> = ({ onLoginSuccess }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [googleEmail, setGoogleEmail] = useState('erickmoreiraguimaraes@gmail.com');
-  const [googleName, setGoogleName] = useState('');
 
-  // Listen for popup OAuth messages
+  // Listen for popup OAuth messages with strict origin checking
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
+      // Validate origin strictly
+      if (event.origin !== window.location.origin) {
+        return;
+      }
+
       if (event.data && event.data.type === 'GOOGLE_AUTH_SUCCESS' && event.data.token) {
         setIsLoading(false);
         setAuthToken(event.data.token);
@@ -27,54 +30,12 @@ export const GoogleLoginGate: React.FC<GoogleLoginGateProps> = ({ onLoginSuccess
     return () => window.removeEventListener('message', handleMessage);
   }, [onLoginSuccess]);
 
-  const handleDirectGoogleEmailLogin = async (e?: React.FormEvent, overrideEmail?: string, overrideName?: string) => {
-    if (e) e.preventDefault();
-    const targetEmail = (overrideEmail ?? googleEmail).trim().toLowerCase();
-    if (!targetEmail || !targetEmail.includes('@')) {
-      setErrorMsg('Informe um e-mail Google válido (ex: seuemail@gmail.com).');
-      return;
-    }
-
-    setIsLoading(true);
-    setErrorMsg(null);
-    try {
-      const res = await fetchJson<{ success: boolean; token: string; user: AuthUser; message?: string }>(
-        '/api/auth/google-profile-login',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            email: targetEmail,
-            name: (overrideName ?? googleName).trim(),
-          }),
-        }
-      );
-
-      if (res.ok && res.data.token) {
-        setAuthToken(res.data.token);
-        onLoginSuccess(res.data.user, res.data.token);
-      } else {
-        setErrorMsg(res.error || 'Não foi possível entrar com esta conta Google.');
-      }
-    } catch (err: any) {
-      setErrorMsg(err.message || 'Erro de conexão com o servidor.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   const handleGooglePopupLogin = () => {
-    // If an email is already typed, sign in directly so mobile browsers & dynamic tunnels never fail
-    if (googleEmail.trim().includes('@')) {
-      handleDirectGoogleEmailLogin();
-      return;
-    }
-
     setIsLoading(true);
     setErrorMsg(null);
 
-    const width = 480;
-    const height = 620;
+    const width = 500;
+    const height = 650;
     const left = window.screenX + (window.outerWidth - width) / 2;
     const top = window.screenY + (window.outerHeight - height) / 2;
 
@@ -86,7 +47,7 @@ export const GoogleLoginGate: React.FC<GoogleLoginGateProps> = ({ onLoginSuccess
 
     if (!popup) {
       setIsLoading(false);
-      setErrorMsg('Digite seu e-mail do Google abaixo para entrar diretamente.');
+      setErrorMsg('O popup de login foi bloqueado pelo navegador. Permita popups para continuar.');
       return;
     }
 
@@ -159,14 +120,14 @@ export const GoogleLoginGate: React.FC<GoogleLoginGateProps> = ({ onLoginSuccess
             <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
             <div>
               <strong className="text-white block">Perfil 100% Isolado</strong>
-              Cada e-mail Google possui seus próprios cortes e tokens.
+              Cada usuário possui seus próprios cortes, fila e tokens.
             </div>
           </div>
           <div className="flex items-start gap-2.5 p-3 rounded-xl bg-zinc-900/60 border border-zinc-800/60 text-xs text-zinc-300">
             <Lock className="w-4 h-4 text-purple-400 shrink-0 mt-0.5" />
             <div>
               <strong className="text-white block">Criptografia AES-256</strong>
-              Chaves de API guardadas com segurança militar no servidor.
+              Chaves de API guardadas com segurança no servidor.
             </div>
           </div>
           <div className="flex items-start gap-2.5 p-3 rounded-xl bg-zinc-900/60 border border-zinc-800/60 text-xs text-zinc-300">
@@ -180,7 +141,7 @@ export const GoogleLoginGate: React.FC<GoogleLoginGateProps> = ({ onLoginSuccess
             <Key className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
             <div>
               <strong className="text-white block">Auto-Save Contínuo</strong>
-              Tokens e configurações salvas na nuvem sem perder nada.
+              Tokens e configurações salvas na nuvem sem perda de dados.
             </div>
           </div>
         </div>
@@ -192,38 +153,11 @@ export const GoogleLoginGate: React.FC<GoogleLoginGateProps> = ({ onLoginSuccess
           </div>
         )}
 
-        {/* Direct Google Account Form (Works on localhost + any remote tunnel without redirect_uri_mismatch) */}
-        <form onSubmit={handleDirectGoogleEmailLogin} className="space-y-3 mb-4">
-          <div className="p-3.5 rounded-2xl bg-zinc-900/80 border border-zinc-800 space-y-2.5">
-            <div>
-              <label className="block text-[10px] font-bold uppercase tracking-wider text-zinc-400 mb-1">
-                Sua Conta Google (E-mail para Isolar seu Perfil e Tokens)
-              </label>
-              <input
-                type="email"
-                value={googleEmail}
-                onChange={(e) => setGoogleEmail(e.target.value)}
-                placeholder="seuemail@gmail.com"
-                required
-                className="w-full px-3.5 py-2.5 rounded-xl bg-[#090a10] border border-zinc-700/80 focus:border-purple-500 focus:outline-none text-xs text-white font-medium"
-              />
-            </div>
-            <div>
-              <label className="block text-[10px] font-bold uppercase tracking-wider text-zinc-500 mb-1">
-                Nome de Exibição (Opcional)
-              </label>
-              <input
-                type="text"
-                value={googleName}
-                onChange={(e) => setGoogleName(e.target.value)}
-                placeholder="Ex: Erick Moreira (ou nome do testador)"
-                className="w-full px-3.5 py-2 rounded-xl bg-[#090a10] border border-zinc-800 focus:border-purple-500 focus:outline-none text-xs text-zinc-200"
-              />
-            </div>
-          </div>
-
+        {/* Google OAuth Button */}
+        <div className="space-y-3 mb-4">
           <button
-            type="submit"
+            type="button"
+            onClick={handleGooglePopupLogin}
             disabled={isLoading}
             className="w-full flex items-center justify-center gap-3 py-3.5 px-4 rounded-xl font-bold text-sm bg-white text-zinc-900 hover:bg-zinc-100 hover:scale-[1.01] active:scale-[0.99] transition shadow-lg shadow-white/10 disabled:opacity-60 cursor-pointer"
           >
@@ -245,11 +179,9 @@ export const GoogleLoginGate: React.FC<GoogleLoginGateProps> = ({ onLoginSuccess
                 d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
               />
             </svg>
-            <span>{isLoading ? 'Conectando ao Perfil Google...' : 'Continuar com o Google'}</span>
+            <span>{isLoading ? 'Autenticando...' : 'Entrar com o Google'}</span>
           </button>
-        </form>
 
-        <div className="flex flex-col gap-2">
           <button
             type="button"
             onClick={handleDemoLogin}
@@ -257,13 +189,13 @@ export const GoogleLoginGate: React.FC<GoogleLoginGateProps> = ({ onLoginSuccess
             className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold text-xs bg-zinc-800/80 hover:bg-zinc-800 text-zinc-300 hover:text-white border border-zinc-700/60 transition disabled:opacity-60 cursor-pointer"
           >
             <UserCheck className="w-4 h-4 text-emerald-400" />
-            <span>Entrar como Visitante / Demonstração em 1 Clique</span>
+            <span>Entrar como Visitante / Demonstração</span>
           </button>
         </div>
 
         {/* Footer Notice */}
         <p className="text-[11px] text-zinc-500 text-center mt-5">
-          Ao entrar com seu Gmail, seus tokens, cortes e fila ficam salvos exclusivamente na sua conta.
+          Seus dados de acesso, cortes e configurações são salvos de forma protegida e isolada.
         </p>
       </div>
     </div>

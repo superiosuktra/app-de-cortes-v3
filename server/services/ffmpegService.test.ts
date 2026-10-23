@@ -1,7 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import fs from 'fs';
-import { downloadYouTubeSlice, buildLayoutFilter } from './ffmpegService';
+import { buildLayoutFilter, downloadYouTubeSlice } from './ffmpegService.js';
 
 test('buildLayoutFilter generates valid 9:16 filter chains', () => {
   const centerFilter = buildLayoutFilter('speaker_center');
@@ -12,19 +11,16 @@ test('buildLayoutFilter generates valid 9:16 filter chains', () => {
   assert.ok(splitFilter.includes('vstack=inputs=2'), 'Split layout vertically stacks 2 video inputs');
 });
 
-test('downloadYouTubeSlice fallback generates valid mp4 file when url is unreachable', async () => {
-  const slicePath = await downloadYouTubeSlice({
-    videoUrl: 'https://www.youtube.com/watch?v=nonexistent_invalid_id_99999',
-    startTime: '00:00',
-    endTime: '00:05',
-  });
-
-  assert.ok(fs.existsSync(slicePath), 'Fallback video file exists');
-  const stats = fs.statSync(slicePath);
-  assert.ok(stats.size > 1000, 'Fallback video has valid content size (>1KB)');
-
-  // Clean up
-  try {
-    fs.unlinkSync(slicePath);
-  } catch {}
+test('downloadYouTubeSlice rejects and throws error when url is invalid without synthetic fallback', async () => {
+  await assert.rejects(
+    async () => {
+      await downloadYouTubeSlice({
+        videoUrl: 'https://invalid-nonexistent-domain.com/bad',
+        startTime: '00:00',
+        endTime: '00:05',
+      });
+    },
+    /URL do YouTube inválida ou bloqueada/,
+    'Rejects unsafe URL with clear error'
+  );
 });

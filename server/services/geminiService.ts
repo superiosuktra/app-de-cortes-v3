@@ -37,18 +37,20 @@ const transcriptMemoryCache = new Map<string, CachedTranscriptResult>();
 const geminiClientCache = new Map<string, GoogleGenAI>();
 
 export function resolveGeminiApiKey(userId?: string): string {
-  const candidates = [
-    userId ? stateManager.getCredentials(userId)?.gemini?.apiKey : '',
-    stateManager.getCredentials('default')?.gemini?.apiKey,
-    process.env.GEMINI_API_KEY,
-    GEMINI_API_KEY,
-  ];
-  for (const raw of candidates) {
-    const trimmed = (raw || '').trim();
-    if (trimmed && !trimmed.startsWith('***') && !trimmed.includes('••••')) {
-      return trimmed;
+  // 1. User's own configured key
+  if (userId) {
+    const userKey = stateManager.getCredentials(userId)?.gemini?.apiKey?.trim();
+    if (userKey && !userKey.startsWith('***') && !userKey.includes('••••')) {
+      return userKey;
     }
   }
+
+  // 2. Server environment key fallback for authenticated users
+  const serverKey = (process.env.GEMINI_API_KEY || GEMINI_API_KEY || '').trim();
+  if (serverKey && !serverKey.startsWith('***') && !serverKey.includes('••••')) {
+    return serverKey;
+  }
+
   return '';
 }
 
@@ -76,7 +78,34 @@ async function generateWithOllama(
   prompt: string,
   system?: string
 ): Promise<string> {
-  const cleanEndpoint = (endpoint || 'http://localhost:11434').trim().replace(/\/$/, '');
+  const rawEndpoint = (endpoint || 'http://localhost:11434').trim().replace(/\/$/, '');
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(rawEndpoint);
+  } catch {
+    throw new Error('Endpoint do Ollama inválido.');
+  }
+
+  const hostname = parsedUrl.hostname.toLowerCase();
+  const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+
+  if (process.env.NODE_ENV === 'production') {
+    if (
+      isLocalhost ||
+      hostname.startsWith('10.') ||
+      hostname.startsWith('192.168.') ||
+      hostname.startsWith('172.') ||
+      hostname.startsWith('169.254.') ||
+      hostname.includes('metadata')
+    ) {
+      throw new Error('Conexões para endereços de rede privada são bloqueadas em produção.');
+    }
+  } else {
+    if (!isLocalhost) {
+      throw new Error('Em desenvolvimento local, o Ollama deve estar hospedado em localhost ou 127.0.0.1.');
+    }
+  }
+
   const cleanModel = model || 'llama3:8b';
   const fullPrompt = system
     ? `${system}\n\nRetorne estritamente um array JSON válido sem markdown ou explicações.\n\n${prompt}`
@@ -86,7 +115,7 @@ async function generateWithOllama(
   const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout for local LLM
 
   try {
-    const res = await fetch(`${cleanEndpoint}/api/generate`, {
+    const res = await fetch(`${parsedUrl.origin}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -99,7 +128,7 @@ async function generateWithOllama(
     });
     clearTimeout(timeoutId);
     if (!res.ok) {
-      throw new Error(`Ollama HTTP ${res.status}`);
+      throw new Error(`Ollama respondeu com HTTP ${res.status}`);
     }
     const data: any = await res.json();
     return data?.response || '';
@@ -1218,21 +1247,29 @@ function extractClimaxTeaserFromSlice(
  * Slices the #1 peak speech block into connected sequential continuations:
  * Parte 1 -> Parte 2 (Continuação direta) -> Parte 3 (Continuação direta) -> ...
  */
+/**
+ * Slices the video into high-retention cuts distributed across the entire podcast duration:
+ * Início (0-25%), Terço Médio (25-50%), Clímax/Centro (50-75%), e Desfecho/Fim (75-100%).
+ * Supports ANY requested count (1, 5, 12, 20, 30, 50, etc.) without arbitrary ceilings.
+ */
 function buildSequentialStorySlices(
   segments: TranscriptSegment[],
   heatmap: HeatmapMarker[],
   cutsCount: number
 ): SequentialSlice[] {
-  const count = Math.max(4, Math.min(12, cutsCount));
+  const count = Math.max(1, cutsCount || 6);
 
   if (segments.length === 0) {
-    // Fallback continuous sequential timeline starting at 04:00 (after podcast intro)
-    const baseStart = 240;
-    const partDur = 46;
+    // Fallback distributed timeline across 2 hours (7200s)
+    const baseStart = 180; // skip initial greetings
+    const totalSpan = 3600;
+    const step = Math.max(50, Math.floor(totalSpan / count));
+    const partDur = 45;
+
     return Array.from({ length: count }, (_, idx) => {
-      const s = baseStart + idx * partDur;
+      const s = baseStart + idx * step;
       const e = s + partDur;
-      const tAbs = s + 28;
+      const tAbs = s + 24;
       return {
         partNumber: idx + 1,
         totalParts: count,
@@ -1244,79 +1281,112 @@ function buildSequentialStorySlices(
         spokenTranscript: '',
         openingHookSentence: '',
         closingPayoffSentence: '',
-        headlineSnippet: `PARTE ${idx + 1}`,
-        heatmapIntensity: 0.85,
-        teaserOffsetSec: 28,
+        headlineSnippet: `MOMENTO IMPACTANTE ${idx + 1}`,
+        heatmapIntensity: 0.88,
+        teaserOffsetSec: 24,
         teaserDurationSec: 4,
         teaserStartTime: formatSecondsToMMSS(tAbs),
         teaserEndTime: formatSecondsToMMSS(tAbs + 4),
-        teaserText: 'Momento mais impactante do corte colocado nos primeiros 4 segundos!',
-        cleanTwoWordSubtitles: [`PARTE ${idx + 1}`, 'OLHA ISSO', 'ATÉ O FIM'],
+        teaserText: 'Momento de alto impacto distribuído ao longo do podcast!',
+        cleanTwoWordSubtitles: [`CORTE ${idx + 1}`, 'OLHA ISSO', 'ATÉ O FIM'],
       };
     });
   }
 
-  let cursorIdx = findBestStoryAnchorIndex(segments, heatmap, count);
+  const firstSegStart = segments[0].startSec;
+  const lastSegEnd = segments[segments.length - 1].endSec;
+  const totalDuration = Math.max(60, lastSegEnd - firstSegStart);
+
+  // Divide timeline into `count` search zones to distribute cuts across the ENTIRE podcast
   const slices: SequentialSlice[] = [];
+  const usedRanges: { start: number; end: number }[] = [];
+
+  const windowSpan = totalDuration / count;
 
   for (let i = 0; i < count; i++) {
-    // Skip any sponsor segment if encountered
-    while (cursorIdx < segments.length - 1 && isSponsorText(segments[cursorIdx].text)) {
-      cursorIdx++;
+    // Target time range for this cut
+    const zoneStart = firstSegStart + i * windowSpan;
+    const zoneEnd = zoneStart + windowSpan;
+
+    // Find candidate segments in this zone (skipping ads and sponsor keywords)
+    const candidateIndices: number[] = [];
+    for (let sIdx = 0; sIdx < segments.length; sIdx++) {
+      const seg = segments[sIdx];
+      if (seg.startSec >= zoneStart && seg.startSec < zoneEnd) {
+        if (!isSponsorText(seg.text)) {
+          candidateIndices.push(sIdx);
+        }
+      }
     }
 
-    const startSeg = segments[cursorIdx] || segments[segments.length - 1];
-    const startSec =
-      i > 0 && slices[i - 1]
-        ? slices[i - 1].endSec
-        : Math.floor(startSeg.startSec);
-    const targetDuration = 46; // ~46 seconds per sequential part (ideal for YouTube Shorts/TikTok/Reels)
+    // Pick best anchor index in this zone based on hook score and heatmap
+    let bestIdx = candidateIndices[0] ?? Math.floor((i / count) * segments.length);
+    let bestScore = -9999;
+
+    for (const cIdx of candidateIndices) {
+      const s = segments[cIdx];
+      // Avoid overlapping with already selected cuts
+      const isOverlapping = usedRanges.some((r) => Math.abs(s.startSec - r.start) < 40);
+      if (isOverlapping) continue;
+
+      let score = 0;
+      const lower = s.text.toLowerCase();
+
+      // Hook phrase bonus
+      for (const hp of HOOK_PHRASES) {
+        if (lower.includes(hp)) score += 25;
+      }
+      // Topic bonus
+      for (const tp of HIGH_IMPACT_TOPICS) {
+        if (lower.includes(tp)) score += 18;
+      }
+      if (s.text.includes('?')) score += 15;
+      if (s.text.includes('!')) score += 10;
+
+      // Heatmap alignment
+      const marker = heatmap.find(
+        (m) => s.startSec >= m.startSec && s.startSec <= m.startSec + m.durationSec
+      );
+      if (marker) score += marker.score * 50;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestIdx = cIdx;
+      }
+    }
+
+    // Assemble ~40-55s coherent story block starting from bestIdx
+    const startSeg = segments[bestIdx] || segments[0];
+    const startSec = Math.floor(startSeg.startSec);
+    const targetDuration = 45;
 
     const partSegs: TranscriptSegment[] = [];
-    let endIdx = cursorIdx;
-
+    let endIdx = bestIdx;
     while (endIdx < segments.length) {
       const seg = segments[endIdx];
       partSegs.push(seg);
-      const currentDur = seg.endSec - startSec;
-      if (currentDur >= targetDuration) {
-        break;
-      }
+      if (seg.endSec - startSec >= targetDuration) break;
       endIdx++;
     }
 
     const lastSeg = partSegs[partSegs.length - 1] || startSeg;
-    const endSec = Math.max(startSec + 34, Math.min(startSec + 56, Math.ceil(lastSeg.endSec)));
+    const endSec = Math.max(startSec + 32, Math.min(startSec + 58, Math.ceil(lastSeg.endSec)));
     const durationSec = endSec - startSec;
 
-    const spokenTranscript = cleanSpokenStutters(
-      partSegs.map((s) => s.text).join(' ')
-    );
-    const openingHookSentence = cleanSpokenStutters(
-      partSegs
-        .slice(0, 2)
-        .map((s) => s.text)
-        .join(' ')
-    );
-    const closingPayoffSentence = cleanSpokenStutters(
-      partSegs
-        .slice(-2)
-        .map((s) => s.text)
-        .join(' ')
-    );
+    usedRanges.push({ start: startSec, end: endSec });
 
+    const spokenTranscript = cleanSpokenStutters(partSegs.map((s) => s.text).join(' '));
+    const openingHookSentence = cleanSpokenStutters(partSegs.slice(0, 2).map((s) => s.text).join(' '));
+    const closingPayoffSentence = cleanSpokenStutters(partSegs.slice(-2).map((s) => s.text).join(' '));
     const headlineSnippet = synthesizeViralHeadline(partSegs, i + 1);
     const teaserInfo = extractClimaxTeaserFromSlice(partSegs, startSec, durationSec);
     const cleanTwoWordSubtitles = buildCleanTwoWordSubtitles(spokenTranscript, headlineSnippet);
 
-    // Compute heatmap intensity for this slice
     const overlappingHeat = heatmap.filter(
       (m) => m.startSec + m.durationSec >= startSec && m.startSec <= endSec
     );
     const heatmapIntensity =
-      overlappingHeat.length > 0
-        ? Math.max(...overlappingHeat.map((m) => m.score))
-        : 0.78;
+      overlappingHeat.length > 0 ? Math.max(...overlappingHeat.map((m) => m.score)) : 0.82;
 
     slices.push({
       partNumber: i + 1,
@@ -1334,21 +1404,14 @@ function buildSequentialStorySlices(
       ...teaserInfo,
       cleanTwoWordSubtitles,
     });
-
-    // Advance cursorIdx so the NEXT cut is the DIRECT CONTINUATION of this cut!
-    if (endIdx < segments.length - 1) {
-      cursorIdx = endIdx + 1;
-    } else {
-      cursorIdx = Math.min(segments.length - 1, Math.floor(segments.length * 0.35));
-    }
   }
 
   return slices;
 }
 
 /**
- * Generates Sequential Narrative Continuation Cuts (Parte 1 -> Parte 2 -> Parte 3...)
- * anchored to real spoken sentences, YouTube's "Most Replayed" Heatmap, and Option 3 Cold-Open Climax Teaser.
+ * Generates Diverse & Comprehensive Viral Cuts distributed across the entire podcast duration.
+ * Supports any requested quantity (1, 5, 12, 20, 30, 50, etc.).
  */
 function generateHeuristicViralCuts({
   videoId,
@@ -1367,7 +1430,7 @@ function generateHeuristicViralCuts({
   heatmap?: HeatmapMarker[];
   cutsCount?: number;
 }) {
-  const count = Math.max(4, Math.min(12, cutsCount));
+  const count = Math.max(1, cutsCount || 6);
   const safeTitle = (videoTitle || 'Episódio em Alta').replace(/\s*\([^)]*\)\s*/g, ' ').trim();
   const safeChannel = channelName || 'Podcast Oficial';
 
@@ -1378,65 +1441,72 @@ function generateHeuristicViralCuts({
 
   const slices = buildSequentialStorySlices(segments, heatmap, count);
 
+  const categories = [
+    'História',
+    'Opinião',
+    'Debate',
+    'Polêmica',
+    'Humor',
+    'Educação',
+    'Dica prática',
+    'Reação',
+    'Pergunta e resposta',
+    'Frase de impacto',
+    'Storytelling',
+  ];
+
   const triggers = [
-    'Cold-Open Teaser de Clímax (00:00–00:04) + Gancho de Abertura (Opção 3)',
-    'Cold-Open Teaser de Clímax + Continuação Direta da Ideia (Parte 2)',
-    'Cold-Open Teaser de Clímax + Virada de Chave (Continuação Parte 3)',
-    'Cold-Open Teaser de Clímax + Revelação Central (Continuação Parte 4)',
-    'Cold-Open Teaser de Clímax + Exemplo Real (Continuação Parte 5)',
-    'Cold-Open Teaser de Clímax + Conclusão Definitiva (Desfecho da Sequência)',
+    'Gancho de Quebra de Padrão e Revelação de Impacto',
+    'História Envolvente com Virada Surpreendente',
+    'Opinião Forte e Debate sem Filtros',
+    'Dica Prática e Raciocínio de Alta Performance',
+    'Momento Cômico e Resenha Espontânea',
+    'Choque de Realidade e Superação Pessoal',
+    'Conclusão Definitiva e Chamada para Reflexão',
   ];
 
   const layoutRotation = [
     'speaker_center',
-    'speaker_center',
     'dynamic_reframe',
     'split_screen',
     'speaker_center',
-    'speaker_center',
+    'dynamic_reframe',
   ];
+
   const speakers = [
-    'Orador Principal (Câmera 9:16 Central)',
     'Orador Principal (Câmera 9:16 Central)',
     'Auto-Reframe IA (Troca Dinâmica)',
     'Ambos (Diálogo / Split Screen)',
-    'Orador Principal (Câmera 9:16 Central)',
-    'Orador Principal (Câmera 9:16 Central)',
+    'Convidado (Foco em Close-up)',
   ];
-  // Default to none / clean (tela 100% limpa sem legendas pulando na tela)
-  const subtitleThemes = ['none', 'clean', 'none', 'clean'];
+
+  const subtitleThemes = ['clean', 'none', 'submagic', 'hormozi'];
 
   return slices.map((slice, i) => {
-    const isFirst = i === 0;
-    const isLast = i === slices.length - 1;
-    const partLabel = isFirst
-      ? `[PARTE 1]`
-      : isLast
-        ? `[PARTE ${slice.partNumber} - FINAL]`
-        : `[PARTE ${slice.partNumber} - CONTINUAÇÃO]`;
+    const isSingle = count === 1;
+    const cat = categories[i % categories.length];
+    const trigger = triggers[i % triggers.length];
+
+    const partLabel = isSingle
+      ? `[DESTAQUE]`
+      : `[PARTE ${slice.partNumber}/${count}]`;
 
     const realHook =
       slice.teaserText && slice.teaserText.length > 10
-        ? `⚡ [GANCHO 00:00–00:04]: "${slice.teaserText}" → Início em ${slice.startTime}: "${slice.openingHookSentence}..."`
+        ? `⚡ "${slice.teaserText}" — Início em ${slice.startTime}: "${slice.openingHookSentence}..."`
         : slice.openingHookSentence && slice.openingHookSentence.length > 12
           ? `"${slice.openingHookSentence}..."`
-          : `Veja o que ${safeChannel} revelou neste trecho sobre ${safeTitle}.`;
+          : `Veja o que ${safeChannel} revelou sobre ${safeTitle}.`;
 
     const realPayoff =
       slice.closingPayoffSentence && slice.closingPayoffSentence.length > 12
         ? `"${slice.closingPayoffSentence}"`
-        : isLast
-          ? `Conclusão completa do raciocínio! O que você achou dessa visão?`
-          : `Continua no próximo corte (Parte ${slice.partNumber + 1})!`;
+        : `Trecho completo e autossuficiente com início, desenvolvimento e clímax.`;
 
-    const nextCta = isLast
-      ? `✅ Sequência completa! Volte no perfil se perdeu a Parte 1.`
-      : `⏭️ A Parte ${slice.partNumber + 1} (continuação direta dessa fala) sai em instantes aqui no canal! Siga para não perder.`;
-
-    const score = Math.min(99, Math.max(94, Math.round(93 + slice.heatmapIntensity * 6)));
+    const score = Math.min(99, Math.max(88, Math.round(90 + slice.heatmapIntensity * 9)));
 
     return {
-      id: `cut-seq-${slice.partNumber}-${Date.now()}-${i}`,
+      id: `cut-${slice.partNumber}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
       title: `🔥 ${partLabel} ${slice.headlineSnippet} — ${safeChannel}`.slice(0, 95),
       startTime: slice.startTime,
       endTime: slice.endTime,
@@ -1444,15 +1514,16 @@ function generateHeuristicViralCuts({
       endSeconds: slice.endSec,
       durationSeconds: slice.durationSec,
       viralityScore: score,
+      category: cat,
       hook: realHook,
       payoff: realPayoff,
-      neuromarketingTrigger: triggers[i % triggers.length],
-      viralityAnalysis: isFirst
-        ? `Estratégia Opção 3 Ativa: Abre nos primeiros 4s com o clímax do próprio corte (${slice.teaserStartTime}–${slice.teaserEndTime}: "${slice.teaserText}") para prender 100% da atenção e em seguida inicia a fala em ${slice.startTime} com tela limpa e legenda dinâmica de 2 palavras.`
-        : `Estratégia Opção 3 Ativa: Abre com Teaser de Clímax de 4s (${slice.teaserStartTime}–${slice.teaserEndTime}) e segue na continuação direta da Parte ${slice.partNumber - 1} (${slices[i - 1].endTime} → ${slice.startTime}).`,
+      neuromarketingTrigger: trigger,
+      viralityAnalysis: `Trecho autossuficiente no intervalo ${slice.startTime}–${slice.endTime}. Gancho: "${slice.teaserText || slice.headlineSnippet}". Categoria: ${cat}. Retenção estimada em ${score}%.`,
       recommendedFormat: layoutRotation[i % layoutRotation.length],
       activeSpeaker: speakers[i % speakers.length],
       subtitleTheme: subtitleThemes[i % subtitleThemes.length],
+      renderStatus: 'pending' as const,
+      renderProgress: 0,
       framing: {
         speaker1X: 38,
         speaker1Y: 30,
@@ -1460,18 +1531,17 @@ function generateHeuristicViralCuts({
         speaker2Y: 30,
         zoom: 1.0,
         detectedFacesCount: 2,
-        aiInsight:
-          'Enquadramento Calibrado IA: Centralizado com respiro natural (Y=30%, X=50%) sem poluição visual ou cortes tortos.',
+        aiInsight: 'Enquadramento 9:16 calibrado com respiro natural no topo (Y=30%) e centro perfeito.',
       },
       caption: {
-        youtube: `${partLabel} — "${slice.teaserText}"\n\n${nextCta}\n\n#Shorts #Cortes #Podcast #Viral`,
-        instagram: `${partLabel} — "${slice.teaserText}"\n\n${nextCta}\n\n👇 Comente sua opinião!`,
-        tiktok: `${partLabel} "${slice.teaserText}" 🤯 ${nextCta} #shorts #cortes #viral`,
-        kwai: `${partLabel} "${slice.teaserText}" 🔥 Assista até o final! ${nextCta} #Kwai #KwaiBrasil #Cortes #Viral`,
+        youtube: `${partLabel} — "${slice.teaserText || slice.headlineSnippet}"\n\n${realPayoff}\n\n#Shorts #Cortes #Podcast #${cat.replace(/\s+/g, '')} #Viral`,
+        instagram: `${partLabel} — "${slice.teaserText || slice.headlineSnippet}"\n\n${realPayoff}\n\n👇 Comente o que você achou!`,
+        tiktok: `${partLabel} "${slice.teaserText || slice.headlineSnippet}" 🤯 #shorts #cortes #${cat.toLowerCase()} #viral`,
+        kwai: `${partLabel} "${slice.teaserText || slice.headlineSnippet}" 🔥 Assista até o fim! #Kwai #Cortes #Viral`,
       },
-      hashtags: ['#Shorts', '#Cortes', '#Podcast', '#Viral', `#Parte${slice.partNumber}`],
+      hashtags: ['#Shorts', '#Cortes', '#Podcast', '#Viral', `#${cat.replace(/\s+/g, '')}`],
       overlaySubtitlesSample: slice.cleanTwoWordSubtitles,
-      partBadge: `PARTE ${slice.partNumber}`,
+      partBadge: isSingle ? 'DESTAQUE' : `PARTE ${slice.partNumber}`,
       teaserOffsetSec: slice.teaserOffsetSec,
       teaserDurationSec: slice.teaserDurationSec,
       teaserStartTime: slice.teaserStartTime,
@@ -1498,31 +1568,35 @@ export async function analyzeVideoFraming({
   videoTitle?: string;
   userId?: string;
 }) {
-  const videoId = rawId || extractVideoId(videoUrl || '') || 'B57eOqeLVfc';
+  const videoId = rawId || (videoUrl ? extractVideoId(videoUrl) : '');
 
   // Fetch mid-video scene frames generated by YouTube (1.jpg, 2.jpg, 3.jpg represent 25%, 50%, 75% marks of the video!)
-  const frameUrls = [
-    `https://img.youtube.com/vi/${videoId}/1.jpg`,
-    `https://img.youtube.com/vi/${videoId}/2.jpg`,
-    `https://img.youtube.com/vi/${videoId}/3.jpg`,
-  ];
+  const frameUrls = videoId
+    ? [
+        `https://img.youtube.com/vi/${videoId}/1.jpg`,
+        `https://img.youtube.com/vi/${videoId}/2.jpg`,
+        `https://img.youtube.com/vi/${videoId}/3.jpg`,
+      ]
+    : [];
 
   const inlineParts: any[] = [];
-  for (const url of frameUrls) {
-    try {
-      const resp = await fetch(url);
-      if (resp.ok) {
-        const arrayBuf = await resp.arrayBuffer();
-        const base64 = Buffer.from(arrayBuf).toString('base64');
-        inlineParts.push({
-          inlineData: {
-            mimeType: 'image/jpeg',
-            data: base64,
-          },
-        });
+  if (videoId) {
+    for (const url of frameUrls) {
+      try {
+        const resp = await fetch(url);
+        if (resp.ok) {
+          const arrayBuf = await resp.arrayBuffer();
+          const base64 = Buffer.from(arrayBuf).toString('base64');
+          inlineParts.push({
+            inlineData: {
+              mimeType: 'image/jpeg',
+              data: base64,
+            },
+          });
+        }
+      } catch {
+        // Ignore individual frame fetch error
       }
-    } catch {
-      // Ignore individual frame fetch error
     }
   }
 
@@ -1644,8 +1718,8 @@ export async function analyzeViralCuts({
   cutsCount = 6,
   userId,
 }: {
-  videoUrl: string;
-  transcript: string;
+  videoUrl?: string;
+  transcript?: string;
   userPrompt?: string;
   intent?: string;
   videoTitle?: string;
@@ -1653,7 +1727,13 @@ export async function analyzeViralCuts({
   cutsCount?: number;
   userId?: string;
 }) {
-  const videoId = extractVideoId(videoUrl) || 'B57eOqeLVfc';
+  if (!videoUrl || typeof videoUrl !== 'string' || !videoUrl.trim()) {
+    throw new Error('URL do vídeo é obrigatória.');
+  }
+  const videoId = extractVideoId(videoUrl);
+  if (!videoId) {
+    throw new Error('URL ou ID do vídeo do YouTube inválido.');
+  }
   const intentDescription =
     intent === 'comedy'
       ? 'foco em momentos cômicos, piadas espontâneas e quebras de expectativa engraçadas'
@@ -1669,8 +1749,8 @@ export async function analyzeViralCuts({
 
   const directive =
     userPrompt?.trim() ||
-    `criar cortes em sequência contínua (Parte 1, Parte 2, Parte 3...) com ${intentDescription}`;
-  const targetCount = Math.max(4, Math.min(12, cutsCount));
+    `criar cortes em sequência contínua com ${intentDescription}`;
+  const targetCount = Math.max(1, cutsCount || 6);
 
   // 1. Always fetch the real YouTube transcript + "Most Replayed" Heatmap for this videoId
   const [realTranscriptData, detectedFraming] = await Promise.all([
@@ -1829,6 +1909,7 @@ Para cada uma das ${targetCount} partes sequenciais abaixo, crie:
 
         return {
           ...baseCut,
+          isFallback: false,
           intent: (intent as any) || 'viral_hook',
           title: finalTitle.slice(0, 95),
           hook: aiCut.hook || baseCut.hook,
@@ -1845,7 +1926,11 @@ Para cada uma das ${targetCount} partes sequenciais abaixo, crie:
     }
   }
 
-  return baseSequentialCuts;
+  return baseSequentialCuts.map((cut) => ({
+    ...cut,
+    isFallback: true,
+    warning: 'Análise gerada por heurística com base na transcrição e retenção reais do vídeo porque a IA falhou.',
+  }));
 }
 
 /**

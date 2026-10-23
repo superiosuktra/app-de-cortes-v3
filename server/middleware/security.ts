@@ -2,33 +2,52 @@ import { Request, Response, NextFunction } from 'express';
 import path from 'path';
 
 /**
- * 1. HTTP Security Headers Middleware (Helmet-grade protection)
+ * 1. HTTP Security Headers Middleware (CSP, Anti-Clickjacking, Nosniff)
  */
 export function securityHeadersMiddleware(_req: Request, res: Response, next: NextFunction) {
   res.removeHeader('X-Powered-By');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
-  res.setHeader('X-XSS-Protection', '1; mode=block');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; media-src 'self' blob:; connect-src 'self' https:; frame-src 'self' https://www.youtube.com;"
+  );
   next();
 }
 
 /**
- * 2. Prototype Pollution & Input Sanitization Middleware
+ * 2. Prototype Pollution & Input Sanitization Middleware with 413 response on overflow
  */
-function cleanObject(obj: any, depth: number = 0): any {
-  if (depth > 8 || obj === null || typeof obj !== 'object') {
+function inspectAndSanitize(obj: any, depth: number = 0): { data: any; overflow: boolean } {
+  if (depth > 12) {
+    return { data: obj, overflow: false };
+  }
+
+  if (obj === null || typeof obj !== 'object') {
     if (typeof obj === 'string') {
-      // Strip null bytes and cap maximum string length to 60KB
-      return obj.replace(/\0/g, '').slice(0, 60000);
+      // If single string exceeds 500KB (e.g. accidental base64 dump in json), signal overflow
+      if (obj.length > 500000) {
+        return { data: null, overflow: true };
+      }
+      return { data: obj.replace(/\0/g, ''), overflow: false };
     }
-    return obj;
+    return { data: obj, overflow: false };
   }
 
   if (Array.isArray(obj)) {
-    return obj.slice(0, 200).map((item) => cleanObject(item, depth + 1));
+    if (obj.length > 5000) {
+      return { data: null, overflow: true };
+    }
+    const cleanArr: any[] = [];
+    for (const item of obj) {
+      const res = inspectAndSanitize(item, depth + 1);
+      if (res.overflow) return { data: null, overflow: true };
+      cleanArr.push(res.data);
+    }
+    return { data: cleanArr, overflow: false };
   }
 
   const sanitized: Record<string, any> = {};
@@ -36,23 +55,33 @@ function cleanObject(obj: any, depth: number = 0): any {
     if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
       continue;
     }
-    sanitized[key] = cleanObject(obj[key], depth + 1);
+    const res = inspectAndSanitize(obj[key], depth + 1);
+    if (res.overflow) return { data: null, overflow: true };
+    sanitized[key] = res.data;
   }
-  return sanitized;
+  return { data: sanitized, overflow: false };
 }
 
-export function sanitizeRequestMiddleware(req: Request, _res: Response, next: NextFunction) {
+export function sanitizeRequestMiddleware(req: Request, res: Response, next: NextFunction) {
   if (req.body && typeof req.body === 'object') {
-    req.body = cleanObject(req.body);
+    const check = inspectAndSanitize(req.body);
+    if (check.overflow) {
+      return res.status(413).json({ error: 'Payload muito grande (Payload Too Large).' });
+    }
+    req.body = check.data;
   }
   if (req.query && typeof req.query === 'object') {
-    req.query = cleanObject(req.query);
+    const check = inspectAndSanitize(req.query);
+    if (check.overflow) {
+      return res.status(413).json({ error: 'Parâmetros de query excederam o limite permitido.' });
+    }
+    req.query = check.data;
   }
   next();
 }
 
 /**
- * 3. Sliding-Window In-Memory Rate Limiter (DoS & Brute-Force Protection)
+ * 3. Sliding-Window Rate Limiter using req.ip and per-user scope
  */
 interface RateBucket {
   count: number;
@@ -61,7 +90,6 @@ interface RateBucket {
 
 const buckets = new Map<string, RateBucket>();
 
-// Periodic cleanup to avoid memory growth
 setInterval(() => {
   const now = Date.now();
   for (const [key, bucket] of buckets.entries()) {
@@ -75,19 +103,20 @@ export function createRateLimiter({
   windowMs = 60 * 1000,
   maxRequests = 60,
   scope = 'global',
+  byUser = false,
   message = 'Muitas requisições em sequência. Aguarde alguns segundos antes de tentar novamente.',
 }: {
   windowMs?: number;
   maxRequests?: number;
   scope?: string;
+  byUser?: boolean;
   message?: string;
 }) {
   return (req: Request, res: Response, next: NextFunction) => {
-    const clientIp =
-      (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
-      req.socket.remoteAddress ||
-      'unknown';
-    const key = `${scope}:${clientIp}`;
+    // req.ip is trusted via app.set('trust proxy', 1)
+    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    const userScope = byUser && req.userId ? `usr:${req.userId}` : `ip:${clientIp}`;
+    const key = `${scope}:${userScope}`;
     const now = Date.now();
     const current = buckets.get(key);
 
@@ -118,12 +147,10 @@ export function createRateLimiter({
 
 /**
  * 4. Strict SSRF & Argument Injection Guard for YouTube URLs
- * Always normalizes any valid YouTube input into a canonical `https://www.youtube.com/watch?v=<11-char-id>` URL.
- * Rejects internal IPs, non-YouTube domains, file:// schemes, or CLI option flags (starting with '-').
  */
 export function normalizeSafeYouTubeUrl(urlOrId: string): { videoId: string; canonicalUrl: string } | null {
   const raw = (urlOrId || '').trim();
-  if (!raw || raw.startsWith('-')) {
+  if (!raw || raw.startsWith('-') || /[;|`$<>\0\r\n]/.test(raw)) {
     return null;
   }
 
@@ -172,18 +199,69 @@ export function normalizeSafeYouTubeUrl(urlOrId: string): { videoId: string; can
 }
 
 /**
- * 5. Validate MM:SS or HH:MM:SS timestamp format to prevent yt-dlp section injection
+ * 5. Parse MM:SS or HH:MM:SS or plain seconds to total seconds with strict range checks (minutes and seconds < 60)
  */
-export function sanitizeTimestamp(timeStr: string, fallback: string = '00:00'): string {
-  const clean = (timeStr || '').trim();
-  if (/^\d{1,2}:\d{2}(?::\d{2})?$/.test(clean)) {
-    return clean;
+export function parseTimeToSeconds(t: string | number): number {
+  if (typeof t === 'number') {
+    return Number.isFinite(t) && t >= 0 ? Math.floor(t) : NaN;
   }
-  return fallback;
+  if (!t || typeof t !== 'string') return NaN;
+  const clean = t.trim();
+  if (!clean) return NaN;
+
+  // Plain seconds e.g. "90"
+  if (/^\d+$/.test(clean)) {
+    const val = parseInt(clean, 10);
+    return Number.isFinite(val) && val >= 0 ? val : NaN;
+  }
+
+  const parts = clean.split(':');
+  if (parts.length === 2) {
+    const [mStr, sStr] = parts;
+    if (!/^\d+$/.test(mStr) || !/^\d{2}$/.test(sStr)) return NaN;
+    const m = parseInt(mStr, 10);
+    const s = parseInt(sStr, 10);
+    if (s >= 60) return NaN;
+    return m * 60 + s;
+  }
+
+  if (parts.length === 3) {
+    const [hStr, mStr, sStr] = parts;
+    if (!/^\d+$/.test(hStr) || !/^\d{2}$/.test(mStr) || !/^\d{2}$/.test(sStr)) return NaN;
+    const h = parseInt(hStr, 10);
+    const m = parseInt(mStr, 10);
+    const s = parseInt(sStr, 10);
+    if (m >= 60 || s >= 60) return NaN;
+    return h * 3600 + m * 60 + s;
+  }
+
+  return NaN;
+}
+
+export function formatSecondsToTimestamp(totalSeconds: number): string {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const remS = s % 60;
+  if (h > 0) {
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(remS).padStart(2, '0')}`;
+  }
+  return `${String(m).padStart(2, '0')}:${String(remS).padStart(2, '0')}`;
 }
 
 /**
- * 6. Path Traversal Guard
+ * 6. Validates timestamp and returns normalized formatted string without fallback silent substitutions
+ */
+export function sanitizeTimestamp(timeStr: string | number, fallbackDefault = '00:00'): string {
+  const sec = parseTimeToSeconds(timeStr);
+  if (isNaN(sec)) {
+    return fallbackDefault;
+  }
+  return formatSecondsToTimestamp(sec);
+}
+
+/**
+ * 7. Path Traversal Guard
  */
 export function isPathInsideDir(filePath: string, allowedDir: string): boolean {
   const resolvedFile = path.resolve(filePath);
@@ -192,35 +270,24 @@ export function isPathInsideDir(filePath: string, allowedDir: string): boolean {
 }
 
 /**
- * 7. Parse MM:SS or HH:MM:SS to total seconds
- */
-export function parseTimeToSeconds(t: string | number): number {
-  if (typeof t === 'number') return t;
-  if (!t || typeof t !== 'string') return NaN;
-  const parts = t.trim().split(':').map(Number);
-  if (parts.some(isNaN)) return NaN;
-  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-  if (parts.length === 2) return parts[0] * 60 + parts[1];
-  if (parts.length === 1) return parts[0];
-  return NaN;
-}
-
-/**
- * 8. Strict Cut Interval Validation (Bounds, duration, ordering)
+ * 8. Strict Cut Interval Validation (No silent fallbacks, minutes & seconds < 60)
  */
 export function validateCutInterval(
   startTime: string | number,
   endTime: string | number,
-  maxDuration = 180
-): { valid: boolean; error?: string; startSec?: number; endSec?: number } {
+  maxDuration = 300
+): { valid: boolean; error?: string; startSec?: number; endSec?: number; formattedStart?: string; formattedEnd?: string } {
   const startSec = parseTimeToSeconds(startTime);
   const endSec = parseTimeToSeconds(endTime);
 
-  if (isNaN(startSec) || isNaN(endSec) || !isFinite(startSec) || !isFinite(endSec)) {
-    return { valid: false, error: 'Intervalo de corte inválido (valores não numéricos).' };
+  if (isNaN(startSec) || isNaN(endSec)) {
+    return {
+      valid: false,
+      error: 'Formato de tempo inválido. Use MM:SS ou HH:MM:SS (minutos e segundos devem ser menores que 60).',
+    };
   }
   if (startSec < 0 || endSec <= 0) {
-    return { valid: false, error: 'Tempos de corte não podem ser negativos ou zero.' };
+    return { valid: false, error: 'Os tempos de início e término não podem ser negativos.' };
   }
   if (startSec >= endSec) {
     return { valid: false, error: 'O tempo inicial deve ser menor que o tempo final.' };
@@ -232,5 +299,12 @@ export function validateCutInterval(
   if (duration > maxDuration) {
     return { valid: false, error: `A duração do corte não pode exceder ${maxDuration} segundos.` };
   }
-  return { valid: true, startSec, endSec };
+
+  return {
+    valid: true,
+    startSec,
+    endSec,
+    formattedStart: formatSecondsToTimestamp(startSec),
+    formattedEnd: formatSecondsToTimestamp(endSec),
+  };
 }

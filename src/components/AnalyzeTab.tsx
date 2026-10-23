@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Zap,
   Sparkles,
@@ -11,9 +11,7 @@ import {
   Scissors,
   ArrowRight,
   AlertCircle,
-  HelpCircle,
   Brain,
-  Hash,
   CheckCircle2,
   Share2,
   Mic,
@@ -22,9 +20,18 @@ import {
   Smartphone,
   Trash2,
   X,
+  Download,
+  Filter,
+  CheckSquare,
+  Square,
+  Package,
+  RefreshCw,
+  Search,
+  ExternalLink,
+  SlidersHorizontal,
 } from 'lucide-react';
-import { VideoInfo, ViralCut, AutoPostSettings, CutIntent } from '../types';
-import { fetchJson } from '../utils/api';
+import { VideoInfo, ViralCut, AutoPostSettings, CutIntent, BatchRenderJob } from '../types';
+import { fetchJson, authFetch } from '../utils/api';
 import confetti from 'canvas-confetti';
 
 interface AnalyzeTabProps {
@@ -51,9 +58,9 @@ interface AnalyzeTabProps {
 
 const PRESET_VIDEOS = [
   {
-    name: 'Os Sócios: Poder da Disciplina (Renato Cariani)',
+    name: 'Os Sócios: Poder da Disciplina',
     url: 'https://www.youtube.com/watch?v=B57eOqeLVfc',
-    prompt: 'focar em dicas contra-intuitivas sobre foco, disciplina e vícios digitais',
+    prompt: 'focar em disciplina inabalável, foco contra distrações e rotina de alta performance',
   },
   {
     name: 'PrimoCast: Segredos de Negócios',
@@ -65,6 +72,19 @@ const PRESET_VIDEOS = [
     url: 'https://www.youtube.com/watch?v=QmOF0crdyRU',
     prompt: 'focar em protocolos científicos rápidos de saúde e energia imediata',
   },
+];
+
+const CATEGORIES = [
+  'Todos',
+  'História',
+  'Opinião',
+  'Debate',
+  'Polêmica',
+  'Humor',
+  'Educação',
+  'Dica prática',
+  'Reação',
+  'Frase de impacto',
 ];
 
 export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
@@ -89,8 +109,8 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
   onDeleteEditCut,
 }) => {
   const [cutsCount, setCutsCount] = useState<number>(8);
+  const [customCutsInput, setCustomCutsInput] = useState<string>('8');
   const [cutIntent, setCutIntent] = useState<CutIntent>('viral_hook');
-  const [retentionStrategyOption, setRetentionStrategyOption] = useState<1 | 2 | 3>(3);
   const [isLoadingInfo, setIsLoadingInfo] = useState<boolean>(false);
   const [isLoadingTranscript, setIsLoadingTranscript] = useState<boolean>(false);
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
@@ -100,7 +120,27 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
   const [queueNotice, setQueueNotice] = useState<{ count: number; message: string } | null>(null);
   const [confirmClearEditCuts, setConfirmClearEditCuts] = useState<boolean>(false);
 
-  // Fetch video info when url changes or on blur
+  // Selection & Filtering State
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [selectedCategory, setSelectedCategory] = useState<string>('Todos');
+  const [selectedStatusFilter, setSelectedStatusFilter] = useState<'all' | 'selected' | 'rendered' | 'pending' | 'failed'>('all');
+  const [sortBy, setSortBy] = useState<'score' | 'time' | 'duration' | 'recent'>('score');
+
+  // Preview & Render Modal State
+  const [previewingCut, setPreviewingCut] = useState<ViralCut | null>(null);
+  const [renderingCutIds, setRenderingCutIds] = useState<Set<string>>(new Set());
+
+  // Batch Job State
+  const [activeBatchJob, setActiveBatchJob] = useState<BatchRenderJob | null>(null);
+  const [isPackagingZip, setIsPackagingZip] = useState<boolean>(false);
+
+  // Sync custom input
+  useEffect(() => {
+    setCustomCutsInput(String(cutsCount));
+  }, [cutsCount]);
+
+  // Fetch video info
   const handleFetchVideoInfo = async (urlToFetch: string = videoUrl) => {
     if (!urlToFetch.trim()) return;
     setIsLoadingInfo(true);
@@ -115,7 +155,6 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
       if (res.ok && data) {
         setVideoInfo(data);
         setStatusMessage(`Vídeo carregado: ${data.title}`);
-        // If transcript is empty, auto fetch it
         if (!transcript) {
           handleFetchTranscript(urlToFetch);
         }
@@ -130,7 +169,7 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
     }
   };
 
-  // Fetch transcript from YouTube
+  // Fetch transcript
   const handleFetchTranscript = async (urlToFetch: string = videoUrl) => {
     if (!urlToFetch.trim()) return;
     setIsLoadingTranscript(true);
@@ -145,14 +184,14 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
       const data = res.data;
       if (res.ok && data?.transcript) {
         setTranscript(data.transcript);
-        setStatusMessage(`Transcrição obtida com sucesso! (${data.count} trechos de áudio).`);
+        setStatusMessage(`Transcrição obtida com sucesso! (${data.count} falas registradas).`);
       } else {
         setTranscriptNotice(
           data?.message ||
-          res.error ||
-          'Não foram encontradas legendas automáticas para este vídeo. Você pode colar a transcrição ou a IA analisará com base nos tópicos do vídeo.'
+            res.error ||
+            'Não foram encontradas legendas automáticas. A IA analisará o vídeo distribuindo os cortes ao longo do tempo.'
         );
-        setStatusMessage('Transcrição não disponível no YouTube.');
+        setStatusMessage('Transcrição automática restrita no YouTube.');
       }
     } catch (err: any) {
       console.error(err);
@@ -170,7 +209,7 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
     }
 
     setIsAnalyzing(true);
-    setStatusMessage(`Enviando para o Gemini analisar ${cutsCount} momentos magnéticos por todo o vídeo...`);
+    setStatusMessage(`Enviando para o Gemini analisar ${cutsCount} momentos por todo o vídeo...`);
 
     try {
       const res = await fetchJson<any>('/api/analyze', {
@@ -190,14 +229,15 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
       const data = res.data;
       if (res.ok && data?.cuts && data.cuts.length > 0) {
         setViralCuts(data.cuts);
-        setStatusMessage(`✅ Sucesso! ${data.cuts.length} cortes virais identificados com métricas de retenção.`);
+        // By default select all freshly generated cuts
+        setSelectedIds(new Set(data.cuts.map((c: ViralCut) => c.id)));
+        setStatusMessage(`✅ Sucesso! ${data.cuts.length} cortes virais identificados e distribuídos ao longo do podcast.`);
 
-        // Auto-Post Queue Integration
         if (autoPostSettings?.autoEnqueueOnGenerate && onEnqueueCuts) {
           onEnqueueCuts(data.cuts);
           setQueueNotice({
             count: data.cuts.length,
-            message: `🚀 ${data.cuts.length} cortes foram adicionados à Fila de Postagem Automática (intervalo de ${autoPostSettings.intervalMinutes} min)!`,
+            message: `🚀 ${data.cuts.length} cortes foram adicionados à Fila de Postagem Automática!`,
           });
           confetti({ particleCount: 50, spread: 65, origin: { y: 0.6 } });
         }
@@ -212,6 +252,286 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
     }
   };
 
+  // Filter and Sort Cuts
+  const filteredCuts = useMemo(() => {
+    let list = [...viralCuts];
+
+    // Search query
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      list = list.filter(
+        (c) =>
+          c.title.toLowerCase().includes(q) ||
+          c.hook.toLowerCase().includes(q) ||
+          c.category?.toLowerCase().includes(q) ||
+          c.hashtags.some((h) => h.toLowerCase().includes(q))
+      );
+    }
+
+    // Category filter
+    if (selectedCategory !== 'Todos') {
+      list = list.filter((c) => c.category?.toLowerCase() === selectedCategory.toLowerCase());
+    }
+
+    // Status filter
+    if (selectedStatusFilter === 'selected') {
+      list = list.filter((c) => selectedIds.has(c.id));
+    } else if (selectedStatusFilter === 'rendered') {
+      list = list.filter((c) => c.renderStatus === 'completed');
+    } else if (selectedStatusFilter === 'pending') {
+      list = list.filter((c) => !c.renderStatus || c.renderStatus === 'pending');
+    } else if (selectedStatusFilter === 'failed') {
+      list = list.filter((c) => c.renderStatus === 'failed');
+    }
+
+    // Sort
+    list.sort((a, b) => {
+      if (sortBy === 'score') return b.viralityScore - a.viralityScore;
+      if (sortBy === 'time') return a.startSeconds - b.startSeconds;
+      if (sortBy === 'duration') return a.durationSeconds - b.durationSeconds;
+      return 0;
+    });
+
+    return list;
+  }, [viralCuts, searchQuery, selectedCategory, selectedStatusFilter, sortBy, selectedIds]);
+
+  // Multi-Selection Handlers
+  const handleToggleSelect = (cutId: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(cutId)) {
+        next.delete(cutId);
+      } else {
+        next.add(cutId);
+      }
+      return next;
+    });
+  };
+
+  const handleSelectAll = () => {
+    if (selectedIds.size === viralCuts.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(viralCuts.map((c) => c.id)));
+    }
+  };
+
+  const handleSelectVisible = () => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      filteredCuts.forEach((c) => next.add(c.id));
+      return next;
+    });
+  };
+
+  const handleDeselectAll = () => {
+    setSelectedIds(new Set());
+  };
+
+  // Render Single Cut Directly
+  const handleRenderSingleCut = async (cut: ViralCut) => {
+    setRenderingCutIds((prev) => new Set(prev).add(cut.id));
+    try {
+      const res = await authFetch(`/api/clips/${cut.id}/render`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          videoUrl,
+          startTime: cut.startTime,
+          endTime: cut.endTime,
+          format: cut.recommendedFormat || 'speaker_center',
+          subtitleTheme: cut.subtitleTheme || 'none',
+          title: cut.title,
+          hook: cut.hook,
+          framing: cut.framing,
+          subtitles: cut.overlaySubtitlesSample,
+          removeSilence: cut.removeSilence,
+        }),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `Erro HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      // Update cut state
+      setViralCuts(
+        viralCuts.map((c) =>
+          c.id === cut.id
+            ? {
+                ...c,
+                renderStatus: 'completed',
+                renderProgress: 100,
+                previewUrl: data.previewUrl || `/api/clips/${cut.id}/preview`,
+                downloadUrl: data.downloadUrl || `/api/clips/${cut.id}/download`,
+                fileSize: data.fileSize,
+              }
+            : c
+        )
+      );
+
+      confetti({ particleCount: 35, spread: 60 });
+    } catch (err: any) {
+      alert(`Falha ao renderizar corte: ${err.message}`);
+      setViralCuts(
+        viralCuts.map((c) =>
+          c.id === cut.id
+            ? {
+                ...c,
+                renderStatus: 'failed',
+                renderError: err.message,
+              }
+            : c
+        )
+      );
+    } finally {
+      setRenderingCutIds((prev) => {
+        const next = new Set(prev);
+        next.delete(cut.id);
+        return next;
+      });
+    }
+  };
+
+  // Render Selected Cuts in Batch
+  const handleRenderSelected = async () => {
+    const targets = viralCuts.filter((c) => selectedIds.has(c.id));
+    if (targets.length === 0) {
+      alert('Selecione ao menos um corte para renderizar.');
+      return;
+    }
+
+    try {
+      const res = await authFetch('/api/batch/render', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cuts: targets,
+          videoUrl,
+        }),
+      });
+
+      const data = await res.json();
+      if (res.ok && data.jobId) {
+        setActiveBatchJob({
+          id: data.jobId,
+          type: 'render',
+          status: 'rendering',
+          progress: 5,
+          currentStep: `Renderizando ${targets.length} cortes selecionados...`,
+          totalItems: targets.length,
+          completedItems: 0,
+          failedItems: 0,
+          itemIds: targets.map((c) => c.id),
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+      } else {
+        throw new Error(data.error || 'Erro ao iniciar renderização em lote.');
+      }
+    } catch (err: any) {
+      alert(`Erro: ${err.message}`);
+    }
+  };
+
+  // Polling Batch Job Status
+  useEffect(() => {
+    if (!activeBatchJob || activeBatchJob.status === 'completed' || activeBatchJob.status === 'failed') {
+      return;
+    }
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await authFetch(`/api/batch/${activeBatchJob.id}`);
+        if (res.ok) {
+          const updated: BatchRenderJob = await res.json();
+          setActiveBatchJob(updated);
+
+          // If completed, update cut statuses
+          if (updated.status === 'completed') {
+            setViralCuts(
+              viralCuts.map((c) =>
+                updated.itemIds.includes(c.id)
+                  ? {
+                      ...c,
+                      renderStatus: 'completed',
+                      previewUrl: `/api/clips/${c.id}/preview`,
+                      downloadUrl: `/api/clips/${c.id}/download`,
+                    }
+                  : c
+              )
+            );
+            confetti({ particleCount: 70, spread: 75 });
+          }
+        }
+      } catch {}
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [activeBatchJob, viralCuts]);
+
+  // Bulk ZIP Download Handler (Downloads selected cuts or entire sequence)
+  const handleBulkZipDownload = async (onlySelected: boolean = true) => {
+    const targets = onlySelected
+      ? viralCuts.filter((c) => selectedIds.has(c.id))
+      : viralCuts;
+
+    if (targets.length === 0) {
+      alert('Nenhum corte selecionado para baixar em ZIP.');
+      return;
+    }
+
+    setIsPackagingZip(true);
+    setStatusMessage(`Iniciando empacotamento em ZIP de ${targets.length} cortes com SRT e metadados...`);
+
+    try {
+      const res = await authFetch('/api/clips/bulk-download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cuts: targets,
+          videoTitle: videoInfo?.title || 'cortes_virais',
+        }),
+      });
+
+      const data = await res.json();
+      if (res.ok && data.jobId) {
+        // Poll for zip completion
+        const zipJobId = data.jobId;
+        const checkInterval = setInterval(async () => {
+          try {
+            const jobRes = await authFetch(`/api/batch/${zipJobId}`);
+            if (jobRes.ok) {
+              const jobData = await jobRes.json();
+              if (jobData.status === 'completed') {
+                clearInterval(checkInterval);
+                setIsPackagingZip(false);
+                setStatusMessage('✅ Pacote ZIP pronto! O download iniciará automaticamente.');
+
+                // Trigger download
+                window.location.href = `/api/batch/${zipJobId}/download`;
+                confetti({ particleCount: 65, spread: 70 });
+              } else if (jobData.status === 'failed') {
+                clearInterval(checkInterval);
+                setIsPackagingZip(false);
+                alert(`Erro ao gerar ZIP: ${jobData.error}`);
+              }
+            }
+          } catch {
+            clearInterval(checkInterval);
+            setIsPackagingZip(false);
+          }
+        }, 1500);
+      } else {
+        throw new Error(data.error || 'Falha ao iniciar criação do arquivo ZIP.');
+      }
+    } catch (err: any) {
+      setIsPackagingZip(false);
+      alert(`Erro: ${err.message}`);
+    }
+  };
+
   const handleCopyCaption = (cut: ViralCut) => {
     const textToCopy = `${cut.caption.youtube}\n\n${cut.hashtags.join(' ')}`;
     navigator.clipboard.writeText(textToCopy);
@@ -220,11 +540,10 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
   };
 
   return (
-    <div className="space-y-8 animate-fadeIn">
+    <div className="space-y-6 animate-fadeIn">
       {/* Top Config Row */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        
-        {/* Left Column: Video Input & Configurations (5 cols) */}
+        {/* Left Column: Input & AI Configuration (5 cols) */}
         <div className="lg:col-span-5 space-y-5">
           <div className="bg-[#141520] border border-zinc-800 rounded-3xl p-6 shadow-xl space-y-5">
             <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
@@ -233,12 +552,11 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
                   <Zap className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-base font-bold text-white">Configurar Vídeo</h3>
-                  <p className="text-xs text-zinc-400">Insira o link ou escolha um teste rápido</p>
+                  <h3 className="text-base font-bold text-white">Importar & Analisar</h3>
+                  <p className="text-xs text-zinc-400">Selecione podcast do YouTube ou upload local</p>
                 </div>
               </div>
 
-              {/* Status Pulse */}
               {isAnalyzing && (
                 <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-pink-500/20 text-pink-300 border border-pink-500/30 animate-pulse">
                   <Sparkles className="w-3 h-3 text-pink-400" />
@@ -249,7 +567,7 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
 
             {/* Quick Presets */}
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-zinc-400">Testar com 1 Clique (Presets Prontos):</label>
+              <label className="text-xs font-semibold text-zinc-400">Presets de Demonstração Rápida:</label>
               <div className="flex flex-wrap gap-1.5">
                 {PRESET_VIDEOS.map((preset, i) => (
                   <button
@@ -270,8 +588,8 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
             {/* URL Input */}
             <div className="space-y-2">
               <label className="text-xs font-semibold text-zinc-300 flex items-center justify-between">
-                <span>URL do Vídeo do YouTube</span>
-                <span className="text-[10px] text-zinc-500">Suporta Vídeos, Podcasts e Shorts</span>
+                <span>URL do Vídeo ou Podcast</span>
+                <span className="text-[10px] text-zinc-500">YouTube Podcasts & Long-form</span>
               </label>
               <div className="flex gap-2">
                 <input
@@ -286,14 +604,13 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
                   onClick={() => handleFetchVideoInfo()}
                   disabled={isLoadingInfo || !videoUrl}
                   className="px-3.5 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-bold transition disabled:opacity-50"
-                  title="Carregar Metadados"
                 >
                   {isLoadingInfo ? '...' : 'Carregar'}
                 </button>
               </div>
             </div>
 
-            {/* Loaded Video Metadata Card */}
+            {/* Video Metadata Card */}
             {videoInfo && (
               <div className="flex gap-3 p-3 bg-[#191b28] border border-zinc-700/60 rounded-2xl">
                 <img
@@ -315,260 +632,99 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
               </div>
             )}
 
-            {/* Custom User Prompt / Directive */}
-            <div className="space-y-2">
-              <label className="text-xs font-semibold text-zinc-300 flex items-center justify-between">
-                <span>Direcionamento Estratégico (Prompt)</span>
-                <span className="text-[10px] text-purple-400">Personalize o foco da IA</span>
-              </label>
-              <textarea
-                value={userPrompt}
-                onChange={(e) => setUserPrompt(e.target.value)}
-                placeholder="Ex: gere vídeos com maior possibilidade de se tornar viral focando em humor, frases de choque e lições acionáveis..."
-                rows={3}
-                className="w-full px-3.5 py-2.5 bg-[#0f1017] border border-zinc-800 rounded-xl text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-purple-500 transition resize-none"
-              />
-            </div>
-
-            {/* Transcripts Accordion */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
-                  <FileText className="w-3.5 h-3.5 text-zinc-400" />
-                  <span>Transcrição com Timecodes</span>
-                </label>
-                <button
-                  onClick={() => handleFetchTranscript()}
-                  disabled={isLoadingTranscript || !videoUrl}
-                  className="text-[11px] font-semibold text-purple-400 hover:text-purple-300 transition"
-                >
-                  {isLoadingTranscript ? 'Obtendo...' : 'Reobter Legendas'}
-                </button>
-              </div>
-
-              {transcriptNotice && (
-                <div className="flex items-start gap-2 p-2.5 bg-amber-950/30 border border-amber-600/30 rounded-xl text-[11px] text-amber-300">
-                  <AlertCircle className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
-                  <p>{transcriptNotice}</p>
-                </div>
-              )}
-
-              <textarea
-                value={transcript}
-                onChange={(e) => setTranscript(e.target.value)}
-                placeholder="[00:15] Exemplo de transcrição com timestamps... (Obtido automaticamente do vídeo ou cole aqui)"
-                rows={4}
-                className="w-full px-3 py-2 bg-[#0f1017] border border-zinc-800 rounded-xl text-[11px] font-mono text-zinc-300 placeholder-zinc-600 focus:outline-none focus:border-purple-500 transition resize-none"
-              />
-            </div>
-
-            {/* Cuts Quantity Selector (User Request: Faça vários cortes e não só 3) */}
+            {/* Cuts Quantity Configuration (NO 12 LIMIT: ANY QUANTITY FROM 1 TO 50+) */}
             <div className="space-y-2.5 p-3.5 bg-[#171825] border border-zinc-800 rounded-2xl">
               <div className="flex items-center justify-between">
                 <label className="text-xs font-bold text-white flex items-center gap-1.5">
                   <Scissors className="w-3.5 h-3.5 text-pink-400" />
-                  <span>Quantidade de Cortes a Extrair</span>
+                  <span>Quantidade de Cortes Desejada</span>
                 </label>
-                <span className="text-[11px] text-pink-400 font-extrabold bg-pink-500/10 px-2 py-0.5 rounded-full border border-pink-500/30">
-                  {cutsCount} Cortes Selecionados
+                <span className="text-[11px] text-pink-400 font-extrabold bg-pink-500/10 px-2.5 py-0.5 rounded-full border border-pink-500/30">
+                  {cutsCount} {cutsCount === 1 ? 'Corte' : 'Cortes'}
                 </span>
               </div>
 
-              <div className="grid grid-cols-4 gap-2">
-                {[6, 8, 10, 12].map((num) => (
+              {/* Presets Grid */}
+              <div className="grid grid-cols-6 gap-1.5">
+                {[1, 5, 12, 20, 30, 50].map((num) => (
                   <button
                     key={num}
                     type="button"
-                    onClick={() => setCutsCount(num)}
+                    onClick={() => {
+                      setCutsCount(num);
+                      setCustomCutsInput(String(num));
+                    }}
                     className={`py-2 px-1 text-center rounded-xl text-xs font-bold transition-all ${
                       cutsCount === num
-                        ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white shadow-md shadow-pink-900/40 border border-pink-400/50 scale-[1.02]'
+                        ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white shadow-md border border-pink-400/50 scale-[1.02]'
                         : 'bg-[#0f1017] hover:bg-zinc-800 text-zinc-400 hover:text-white border border-zinc-800'
                     }`}
                   >
-                    {num} Cortes
-                    {num === 8 && <span className="block text-[8px] font-normal text-pink-200">Recomendado</span>}
-                    {num === 12 && <span className="block text-[8px] font-normal text-purple-200">Completo</span>}
+                    {num}
                   </button>
                 ))}
               </div>
 
+              {/* Custom Number Input */}
+              <div className="flex items-center gap-2 pt-1 text-xs text-zinc-300">
+                <label className="shrink-0 text-[11px] text-zinc-400">Ou digite o número exato:</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="100"
+                  value={customCutsInput}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setCustomCutsInput(val);
+                    const n = parseInt(val, 10);
+                    if (!isNaN(n) && n >= 1) {
+                      setCutsCount(n);
+                    }
+                  }}
+                  className="w-20 px-2.5 py-1 bg-[#0f1017] border border-zinc-700 rounded-lg text-white font-bold text-center text-xs focus:outline-none focus:border-pink-500"
+                />
+                <span className="text-[10px] text-zinc-500">(Sem limite fixo)</span>
+              </div>
+
               <p className="text-[10px] text-zinc-400 leading-tight">
-                A IA analisa e distribui os <strong>{cutsCount} cortes</strong> em sequência contínua a partir do momento de maior retenção.
+                A IA distribui os cortes por <strong>toda a extensão do vídeo</strong> (início, terço médio, clímax e conclusão).
               </p>
             </div>
 
-            {/* Cut Intent Selector (Parâmetros de Seleção Customizáveis) */}
-            <div className="space-y-2.5 p-3.5 bg-[#171825] border border-cyan-500/20 rounded-2xl">
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-bold text-white flex items-center gap-1.5">
+            {/* Intent Selector */}
+            <div className="space-y-2 p-3 bg-[#171825] border border-cyan-500/20 rounded-2xl">
+              <label className="text-xs font-bold text-white flex items-center justify-between">
+                <span className="flex items-center gap-1.5">
                   <Brain className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>Intenção Editorial do Corte</span>
-                </label>
-                <span className="text-[10px] font-bold text-cyan-300 bg-cyan-500/10 px-2 py-0.5 rounded-full border border-cyan-500/30">
-                  Critério de Seleção IA
+                  <span>Intenção Editorial da Seleção</span>
                 </span>
-              </div>
+                <span className="text-[10px] font-bold text-cyan-300">Critério IA</span>
+              </label>
 
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              <div className="grid grid-cols-3 gap-1.5">
                 {[
-                  { id: 'viral_hook' as const, label: '⚡ Gancho Viral', desc: 'Máxima retenção nos primeiros 3s' },
-                  { id: 'comedy' as const, label: '😂 Humor & Risadas', desc: 'Momentos cômicos e piadas' },
-                  { id: 'controversy' as const, label: '🔥 Polêmica & Debate', desc: 'Opiniões fortes e contrapontos' },
-                  { id: 'storytelling' as const, label: '📖 Storytelling', desc: 'Histórias reais com suspense' },
-                  { id: 'educational' as const, label: '🎓 Educativo & Aula', desc: 'Passo a passo e ensinamentos' },
-                  { id: 'motivational' as const, label: '🚀 Motivação & Foco', desc: 'Choque de realidade e disciplina' },
+                  { id: 'viral_hook' as const, label: '⚡ Gancho' },
+                  { id: 'storytelling' as const, label: '📖 História' },
+                  { id: 'controversy' as const, label: '🔥 Debate' },
+                  { id: 'comedy' as const, label: '😂 Humor' },
+                  { id: 'educational' as const, label: '🎓 Educativo' },
+                  { id: 'motivational' as const, label: '🚀 Foco' },
                 ].map((item) => (
                   <button
                     key={item.id}
                     type="button"
                     onClick={() => setCutIntent(item.id)}
-                    className={`p-2.5 text-left rounded-xl transition-all border ${
+                    className={`py-1.5 px-2 text-center rounded-lg text-[11px] font-bold transition border ${
                       cutIntent === item.id
-                        ? 'bg-gradient-to-r from-cyan-950/60 to-purple-950/60 border-cyan-400 text-white shadow-md ring-1 ring-cyan-500/30'
+                        ? 'bg-cyan-950/60 border-cyan-400 text-cyan-200 shadow-sm'
                         : 'bg-[#0f1017] hover:bg-zinc-800 border-zinc-800 text-zinc-400'
                     }`}
                   >
-                    <div className="text-[11px] font-bold text-zinc-200">{item.label}</div>
-                    <div className="text-[9px] text-zinc-400 mt-0.5 leading-tight">{item.desc}</div>
+                    {item.label}
                   </button>
                 ))}
               </div>
             </div>
-
-            {/* 3-Option Viral Retention & Clean Screen Strategy Selector (Default: Option 3) */}
-            <div className="space-y-2.5 p-3.5 bg-[#171825] border border-amber-500/30 rounded-2xl">
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-bold text-white flex items-center gap-1.5">
-                  <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Estratégia de Retenção & Tela Limpa</span>
-                </label>
-                <span className="text-[10px] font-black bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded-full border border-amber-500/40">
-                  Opção {retentionStrategyOption} Ativa
-                </span>
-              </div>
-
-              <div className="space-y-1.5">
-                {[
-                  {
-                    id: 1 as const,
-                    title: '1. Corte Direto Tradicional',
-                    desc: 'Inicia em 00:00 sem prévia de clímax, com legenda simples embaixo.',
-                  },
-                  {
-                    id: 2 as const,
-                    title: '2. Legenda Dinâmica Central',
-                    desc: 'Legenda de 2 a 3 palavras no centro da tela sem caixa de fundo.',
-                  },
-                  {
-                    id: 3 as const,
-                    title: '3. Cold-Open Clímax (4s) + Legenda 2 Palavras + Zero Poluição ⭐',
-                    desc: 'Pega os 4s mais impactantes do meio do corte e coloca no início (00:00–00:04) para prender o público + tela 100% limpa sem letreiros gigantes.',
-                  },
-                ].map((opt) => (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    onClick={() => setRetentionStrategyOption(opt.id)}
-                    className={`w-full p-2.5 rounded-xl text-left transition-all border ${
-                      retentionStrategyOption === opt.id
-                        ? 'bg-gradient-to-r from-amber-950/60 via-purple-950/50 to-pink-950/60 border-amber-400/70 text-white shadow-md'
-                        : 'bg-[#0f1017] hover:bg-zinc-900 border-zinc-800 text-zinc-400'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-extrabold text-amber-300">{opt.title}</span>
-                      {retentionStrategyOption === opt.id && (
-                        <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                      )}
-                    </div>
-                    <p className="text-[10px] text-zinc-300 mt-0.5 leading-snug">{opt.desc}</p>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Auto-Post Queue Toggle Card (User Request) */}
-            <div className="p-4 bg-gradient-to-r from-purple-950/40 via-purple-900/20 to-pink-950/40 border border-purple-500/40 rounded-2xl space-y-2.5 shadow-md">
-              <label className="flex items-start gap-2.5 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={autoPostSettings?.autoEnqueueOnGenerate ?? true}
-                  onChange={(e) =>
-                    onUpdateAutoPostSettings?.({ autoEnqueueOnGenerate: e.target.checked })
-                  }
-                  className="w-4 h-4 mt-0.5 rounded accent-pink-500 cursor-pointer"
-                />
-                <div>
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="text-xs font-bold text-white flex items-center gap-1">
-                      <Zap className="w-3.5 h-3.5 text-yellow-300" />
-                      Fila de Postagem Automática
-                    </span>
-                    <span className="px-1.5 py-0.2 rounded text-[9px] font-extrabold bg-pink-500/20 text-pink-300 border border-pink-500/40">
-                      AUTO-POST
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-zinc-300 mt-1 leading-snug">
-                    Ao gerar os vídeos, já entra direto em uma fila para postar automático no YouTube Shorts, Reels e TikTok.
-                  </p>
-                </div>
-              </label>
-
-              {autoPostSettings?.autoEnqueueOnGenerate && (
-                <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-purple-500/30 text-[11px]">
-                  <div className="flex items-center gap-1.5 text-zinc-300">
-                    <Clock className="w-3 h-3 text-purple-400" />
-                    <span>Intervalo:</span>
-                    <select
-                      value={autoPostSettings.intervalMinutes}
-                      onChange={(e) =>
-                        onUpdateAutoPostSettings?.({ intervalMinutes: Number(e.target.value) })
-                      }
-                      className="px-2 py-0.5 bg-zinc-900 border border-zinc-700 rounded-lg text-white font-semibold text-[11px] focus:outline-none focus:border-purple-500"
-                    >
-                      <option value={5}>5 min (Rápido)</option>
-                      <option value={10}>10 min</option>
-                      <option value={15}>15 min</option>
-                      <option value={30}>30 min</option>
-                      <option value={60}>1 hora</option>
-                      <option value={120}>2 horas</option>
-                      <option value={240}>4 horas</option>
-                    </select>
-                  </div>
-
-                  <div className="flex items-center gap-1.5 text-[10px] font-bold">
-                    <span className={`w-2 h-2 rounded-full ${autoPostSettings.isActive ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
-                    <span className={autoPostSettings.isActive ? 'text-emerald-300' : 'text-amber-300'}>
-                      {autoPostSettings.isActive ? 'Fila Ativa' : 'Fila Pausada'}
-                    </span>
-                    {queueCount > 0 && (
-                      <span className="ml-1 px-1.5 py-0.2 rounded bg-zinc-800 text-zinc-300">
-                        {queueCount} na fila
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Queue Notification Success Banner */}
-            {queueNotice && (
-              <div className="p-3.5 bg-emerald-950/40 border border-emerald-500/40 rounded-2xl text-xs text-emerald-200 flex items-center justify-between gap-2 shadow-lg animate-fadeIn">
-                <div className="flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span className="leading-snug">{queueNotice.message}</span>
-                </div>
-                {onNavigateToPublish && (
-                  <button
-                    onClick={onNavigateToPublish}
-                    className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] shrink-0 transition shadow-md"
-                  >
-                    Ver Fila ({queueCount}) →
-                  </button>
-                )}
-              </div>
-            )}
 
             {/* Primary Action Button */}
             <button
@@ -577,10 +733,10 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
               className="w-full py-4 rounded-2xl bg-gradient-to-r from-[#7000ff] via-[#b000ff] to-[#ff0055] text-white font-extrabold text-sm shadow-xl shadow-purple-900/40 hover:shadow-pink-900/50 hover:scale-[1.01] active:scale-[0.99] transition-all disabled:opacity-50 flex items-center justify-center gap-2"
             >
               <Sparkles className={`w-5 h-5 text-yellow-300 ${isAnalyzing ? 'animate-spin' : ''}`} />
-              <span>{isAnalyzing ? `Analisando ${cutsCount} Momentos com IA...` : `🔥 Detectar ${cutsCount} Cortes Virais`}</span>
+              <span>{isAnalyzing ? `Analisando e distribuindo ${cutsCount} cortes...` : `🔥 Detectar ${cutsCount} Cortes em Todo o Vídeo`}</span>
             </button>
 
-            {/* Status Feedback Output */}
+            {/* Status Output */}
             {statusMessage && (
               <div className="p-3 bg-zinc-900/80 border border-zinc-800 rounded-xl text-xs text-zinc-300 flex items-center gap-2">
                 <div className="w-2 h-2 rounded-full bg-pink-500 animate-ping" />
@@ -590,73 +746,148 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
           </div>
         </div>
 
-        {/* Right Column: AI Recommendations List (7 cols) */}
+        {/* Right Column: Cuts Grid, Multi-Select Toolbar & Studio Controls (7 cols) */}
         <div className="lg:col-span-7 space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <Flame className="w-5 h-5 text-[#ff0055]" />
-              <h3 className="text-lg font-extrabold text-white">
-                Fila de Edição & Cortes da IA
-              </h3>
-            </div>
-            <div className="flex items-center gap-2 flex-wrap">
-              {viralCuts.length > 0 && onEnqueueCuts && (
+          {/* Studio Master Toolbar with Checkbox & Bulk Actions */}
+          <div className="p-4 bg-[#141520] border border-zinc-800 rounded-3xl shadow-lg space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              {/* Left Zone: Selection Controls */}
+              <div className="flex items-center gap-3 flex-wrap">
                 <button
-                  onClick={() => {
-                    onEnqueueCuts(viralCuts);
-                    setQueueNotice({
-                      count: viralCuts.length,
-                      message: `🚀 Todos os ${viralCuts.length} cortes foram adicionados à Fila de Postagem Automática!`,
-                    });
-                    confetti({ particleCount: 50, spread: 60 });
-                  }}
-                  className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-purple-900/60 hover:bg-purple-900/90 border border-purple-500/40 text-purple-200 hover:text-white text-xs font-bold transition shadow-sm"
+                  onClick={handleSelectAll}
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold text-zinc-200 transition"
+                  title="Alternar seleção de todos os cortes"
                 >
-                  <Zap className="w-3.5 h-3.5 text-yellow-400" />
-                  <span>Enfileirar Todos ({viralCuts.length})</span>
+                  {selectedIds.size === viralCuts.length && viralCuts.length > 0 ? (
+                    <CheckSquare className="w-4 h-4 text-pink-400" />
+                  ) : (
+                    <Square className="w-4 h-4 text-zinc-400" />
+                  )}
+                  <span>Selecionar Todos ({viralCuts.length})</span>
                 </button>
-              )}
-              {viralCuts.length > 0 && onClearEditQueue && (
-                !confirmClearEditCuts ? (
+
+                {selectedIds.size > 0 && (
                   <button
-                    type="button"
-                    onClick={() => setConfirmClearEditCuts(true)}
-                    className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-red-950/40 hover:bg-red-900/50 border border-red-500/40 text-red-300 text-xs font-bold transition"
-                    title="Limpar todos os cortes da Fila de Edição"
+                    onClick={handleDeselectAll}
+                    className="text-xs text-zinc-400 hover:text-white transition"
                   >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span>Limpar Fila de Edição</span>
+                    Desmarcar Todos
                   </button>
-                ) : (
-                  <div className="flex items-center gap-1.5 bg-red-950/70 border border-red-500/60 px-2.5 py-1 rounded-xl animate-fadeIn">
-                    <span className="text-[11px] font-bold text-red-200">Limpar tudo?</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onClearEditQueue();
-                        setConfirmClearEditCuts(false);
-                      }}
-                      className="px-2 py-0.5 rounded-lg bg-red-600 hover:bg-red-500 text-white text-[11px] font-extrabold transition"
-                    >
-                      Sim
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmClearEditCuts(false)}
-                      className="px-2 py-0.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-[11px] font-semibold transition"
-                    >
-                      Não
-                    </button>
-                  </div>
-                )
-              )}
-              {viralCuts.length > 0 && (
-                <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-fuchsia-950/60 border border-fuchsia-500/30 text-fuchsia-300">
-                  {viralCuts.length} Cortes
+                )}
+
+                <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-pink-500/15 border border-pink-500/30 text-pink-300">
+                  {selectedIds.size} de {viralCuts.length} Selecionados
                 </span>
-              )}
+              </div>
+
+              {/* Right Zone: Batch Action Buttons */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={() => handleBulkZipDownload(true)}
+                  disabled={selectedIds.size === 0 || isPackagingZip}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold transition shadow-md disabled:opacity-40"
+                  title="Baixa apenas os cortes selecionados em um arquivo ZIP com SRT e CSV"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Baixar Selecionados (.ZIP)</span>
+                </button>
+
+                <button
+                  onClick={handleRenderSelected}
+                  disabled={selectedIds.size === 0}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-purple-700 hover:bg-purple-600 text-white text-xs font-bold transition shadow-md disabled:opacity-40"
+                  title="Renderiza em alta resolução todos os cortes marcados"
+                >
+                  <Play className="w-3.5 h-3.5" />
+                  <span>Renderizar Selecionados</span>
+                </button>
+
+                <button
+                  onClick={() => handleBulkZipDownload(false)}
+                  disabled={viralCuts.length === 0 || isPackagingZip}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 hover:text-white text-xs font-semibold transition disabled:opacity-40"
+                  title="Baixa a sequência inteira de cortes de uma vez"
+                >
+                  <Package className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Baixar Tudo (.ZIP)</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Filter and Search Bar */}
+            <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 pt-2 border-t border-zinc-800/80">
+              <div className="sm:col-span-5 relative">
+                <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Buscar por fala, tema ou gancho..."
+                  className="w-full pl-8 pr-3 py-1.5 bg-[#0f1017] border border-zinc-800 rounded-xl text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-purple-500"
+                />
+              </div>
+
+              {/* Category Dropdown */}
+              <div className="sm:col-span-4">
+                <select
+                  value={selectedCategory}
+                  onChange={(e) => setSelectedCategory(e.target.value)}
+                  className="w-full px-2.5 py-1.5 bg-[#0f1017] border border-zinc-800 rounded-xl text-xs text-zinc-300 focus:outline-none focus:border-purple-500"
+                >
+                  {CATEGORIES.map((cat) => (
+                    <option key={cat} value={cat}>
+                      Categoria: {cat}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Status Filter */}
+              <div className="sm:col-span-3">
+                <select
+                  value={selectedStatusFilter}
+                  onChange={(e) => setSelectedStatusFilter(e.target.value as any)}
+                  className="w-full px-2.5 py-1.5 bg-[#0f1017] border border-zinc-800 rounded-xl text-xs text-zinc-300 focus:outline-none focus:border-purple-500"
+                >
+                  <option value="all">Status: Todos</option>
+                  <option value="selected">Marcados ({selectedIds.size})</option>
+                  <option value="rendered">Prontos</option>
+                  <option value="pending">Pendentes</option>
+                  <option value="failed">Com Erro</option>
+                </select>
+              </div>
             </div>
           </div>
+
+          {/* Active Batch Progress Banner */}
+          {activeBatchJob && (
+            <div className="p-4 bg-purple-950/40 border border-purple-500/40 rounded-2xl shadow-lg space-y-2.5 animate-fadeIn">
+              <div className="flex items-center justify-between text-xs text-purple-200">
+                <div className="flex items-center gap-2">
+                  <RefreshCw className={`w-4 h-4 text-purple-400 ${activeBatchJob.status === 'rendering' ? 'animate-spin' : ''}`} />
+                  <span className="font-bold">{activeBatchJob.currentStep}</span>
+                </div>
+                <span className="font-mono font-bold text-pink-300">{activeBatchJob.progress}%</span>
+              </div>
+              <div className="w-full h-2 bg-zinc-900 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-purple-500 to-pink-500 transition-all duration-300"
+                  style={{ width: `${activeBatchJob.progress}%` }}
+                />
+              </div>
+              {activeBatchJob.status === 'completed' && activeBatchJob.zipDownloadUrl && (
+                <div className="flex justify-end pt-1">
+                  <a
+                    href={activeBatchJob.zipDownloadUrl}
+                    className="px-4 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs shadow-md flex items-center gap-1.5"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    Baixar Arquivo ZIP Pronto
+                  </a>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Cuts Empty State */}
           {viralCuts.length === 0 && !isAnalyzing && (
@@ -669,7 +900,7 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
                   Nenhum corte na fila de edição
                 </h4>
                 <p className="text-xs text-zinc-400 leading-relaxed">
-                  Insira o link de um vídeo do YouTube ao lado (ou clique em um dos presets de teste rápido) e clique no botão <strong>"Detectar Cortes Virais"</strong> para a IA encontrar os melhores momentos.
+                  Insira o link de um vídeo do YouTube ao lado e clique no botão <strong>"Detectar Cortes em Todo o Vídeo"</strong> para gerar os melhores momentos.
                 </p>
               </div>
             </div>
@@ -689,241 +920,270 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
                   </div>
                   <div className="h-4 w-full bg-zinc-800/60 rounded" />
                   <div className="h-4 w-3/4 bg-zinc-800/40 rounded" />
-                  <div className="flex gap-2 pt-2">
-                    <div className="h-8 w-32 bg-zinc-800 rounded-lg" />
-                    <div className="h-8 w-28 bg-zinc-800 rounded-lg" />
-                  </div>
                 </div>
               ))}
             </div>
           )}
 
-          {/* Cuts List Cards */}
-          {viralCuts.map((cut, index) => {
-            const isCopied = copiedCutId === cut.id;
-            return (
-              <div
-                key={cut.id || index}
-                className="bg-[#141520] hover:bg-[#161826] border border-zinc-800 hover:border-purple-500/50 rounded-2xl p-5 sm:p-6 transition-all duration-300 shadow-lg space-y-4 group"
-              >
-                {/* Header: Title Overlay & Virality Score */}
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-zinc-800/80">
-                  <div className="flex items-center gap-2">
-                    <span className="w-6 h-6 rounded-full bg-gradient-to-tr from-purple-600 to-pink-600 text-white text-xs font-black flex items-center justify-center shrink-0">
-                      {index + 1}
-                    </span>
-                    <h4 className="text-sm sm:text-base font-black text-white group-hover:text-pink-300 transition-colors">
-                      {cut.title}
-                    </h4>
+          {/* Cuts List Cards with Checkboxes & Render Action */}
+          <div className="space-y-4">
+            {filteredCuts.map((cut, index) => {
+              const isSelected = selectedIds.has(cut.id);
+              const isRendering = renderingCutIds.has(cut.id);
+              const isRendered = cut.renderStatus === 'completed';
+              const isCopied = copiedCutId === cut.id;
+
+              return (
+                <div
+                  key={cut.id || index}
+                  className={`bg-[#141520] hover:bg-[#161826] border rounded-2xl p-5 sm:p-6 transition-all duration-300 shadow-lg space-y-4 group ${
+                    isSelected
+                      ? 'border-pink-500/70 ring-1 ring-pink-500/30'
+                      : 'border-zinc-800 hover:border-purple-500/40'
+                  }`}
+                >
+                  {/* Header: Checkbox + Title + Badges */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-zinc-800/80">
+                    <div className="flex items-center gap-3 flex-1 min-w-0">
+                      {/* Selection Checkbox */}
+                      <button
+                        onClick={() => handleToggleSelect(cut.id)}
+                        className="p-1 text-zinc-400 hover:text-pink-400 transition shrink-0"
+                      >
+                        {isSelected ? (
+                          <CheckSquare className="w-5 h-5 text-pink-500" />
+                        ) : (
+                          <Square className="w-5 h-5 text-zinc-500" />
+                        )}
+                      </button>
+
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="w-5 h-5 rounded-full bg-purple-600/30 text-purple-300 text-[10px] font-black flex items-center justify-center shrink-0">
+                            {index + 1}
+                          </span>
+                          <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded bg-zinc-800 text-zinc-300 border border-zinc-700">
+                            {cut.category || 'Destaque'}
+                          </span>
+                          {isRendered ? (
+                            <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-500/40">
+                              ● Pronto
+                            </span>
+                          ) : isRendering ? (
+                            <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-500/40 animate-pulse">
+                              ⏳ Renderizando...
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-bold text-zinc-400">
+                              Pendente
+                            </span>
+                          )}
+                        </div>
+                        <h4 className="text-sm sm:text-base font-black text-white group-hover:text-pink-300 transition-colors truncate mt-1">
+                          {cut.title}
+                        </h4>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      {/* Timecode */}
+                      <div className="px-2.5 py-1 rounded-lg bg-zinc-800/80 border border-zinc-700/60 text-zinc-300 text-xs font-mono font-bold flex items-center gap-1.5">
+                        <Clock className="w-3.5 h-3.5 text-pink-400" />
+                        <span>{cut.startTime} → {cut.endTime} ({cut.durationSeconds}s)</span>
+                      </div>
+
+                      {/* Score Badge */}
+                      <div className="px-2.5 py-1 rounded-lg bg-gradient-to-r from-pink-500/20 to-purple-500/20 border border-pink-500/40 text-pink-300 text-xs font-extrabold flex items-center gap-1">
+                        <Flame className="w-3.5 h-3.5 text-pink-400 fill-pink-400" />
+                        <span>{cut.viralityScore}%</span>
+                      </div>
+
+                      {onDeleteEditCut && (
+                        <button
+                          type="button"
+                          onClick={() => onDeleteEditCut(cut.id)}
+                          className="p-1.5 rounded-lg bg-zinc-900 hover:bg-red-950/60 border border-zinc-800 hover:border-red-500/40 text-zinc-500 hover:text-red-400 transition"
+                          title="Remover corte"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </div>
 
-                  <div className="flex items-center gap-2 flex-wrap">
-                    {/* Sequential Continuation Badge */}
-                    <div className="px-2.5 py-1 rounded-lg bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-[11px] font-extrabold flex items-center gap-1">
-                      <span>
-                        {index === 0
-                          ? '🎯 Pico #1 de Interesse (Início)'
-                          : `🔗 Continuação da Parte ${index}`}
+                  {/* Hook & Payoff Details */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                    <div className="p-3 bg-gradient-to-r from-amber-950/20 to-[#0d0e15] border border-amber-500/30 rounded-xl space-y-1">
+                      <span className="text-[10px] font-extrabold text-amber-300 uppercase tracking-wider block">
+                        ⚡ Gancho Inicial:
                       </span>
+                      <p className="text-zinc-200 font-semibold line-clamp-2 italic">
+                        "{cut.hook}"
+                      </p>
                     </div>
 
-                    {/* Timecode Badge */}
-                    <div className="px-2.5 py-1 rounded-lg bg-zinc-800/80 border border-zinc-700/60 text-zinc-300 text-xs font-mono font-bold flex items-center gap-1.5">
-                      <Clock className="w-3.5 h-3.5 text-pink-400" />
-                      <span>{cut.startTime} → {cut.endTime} ({cut.durationSeconds}s)</span>
+                    <div className="p-3 bg-[#0d0e15] border border-zinc-800/80 rounded-xl space-y-1">
+                      <span className="text-[10px] font-bold text-purple-400 uppercase tracking-wider block">
+                        🎯 Conclusão / Payoff:
+                      </span>
+                      <p className="text-zinc-300 font-medium line-clamp-2">
+                        {cut.payoff}
+                      </p>
                     </div>
+                  </div>
 
-                    {/* Virality Score Badge */}
-                    <div className="px-2.5 py-1 rounded-lg bg-gradient-to-r from-pink-500/20 to-purple-500/20 border border-pink-500/40 text-pink-300 text-xs font-extrabold flex items-center gap-1">
-                      <Flame className="w-3.5 h-3.5 text-pink-400 fill-pink-400" />
-                      <span>{cut.viralityScore}%</span>
-                    </div>
+                  {/* Why it Virals */}
+                  <p className="text-xs text-zinc-300 leading-relaxed bg-zinc-900/40 p-3 rounded-xl border border-zinc-800/50">
+                    <strong className="text-pink-400">Análise de Retenção:</strong> {cut.viralityAnalysis}
+                  </p>
 
-                    {onDeleteEditCut && (
+                  {/* Action Buttons: Render, Preview, Download MP4, Studio */}
+                  <div className="flex items-center gap-2.5 pt-2 flex-wrap">
+                    {/* Render button if not yet rendered */}
+                    {!isRendered && (
                       <button
-                        type="button"
-                        onClick={() => onDeleteEditCut(cut.id)}
-                        className="p-1.5 rounded-lg bg-zinc-900 hover:bg-red-950/60 border border-zinc-800 hover:border-red-500/40 text-zinc-500 hover:text-red-400 transition"
-                        title="Remover este corte da Fila de Edição"
+                        onClick={() => handleRenderSingleCut(cut)}
+                        disabled={isRendering}
+                        className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold transition shadow-md disabled:opacity-50"
                       >
-                        <X className="w-3.5 h-3.5" />
+                        <RefreshCw className={`w-3.5 h-3.5 ${isRendering ? 'animate-spin' : ''}`} />
+                        <span>{isRendering ? 'Renderizando...' : 'Renderizar Este Corte'}</span>
                       </button>
                     )}
-                  </div>
-                </div>
 
-                {/* Opus Clip / Klap Layout & Speaker Intelligence Pills */}
-                <div className="flex flex-wrap items-center gap-2 pt-0.5">
-                  <span
-                    className={`px-2.5 py-1 rounded-xl text-[11px] font-bold border flex items-center gap-1.5 ${
-                      cut.recommendedFormat === 'split_screen'
-                        ? 'bg-yellow-950/40 text-yellow-300 border-yellow-500/40 shadow-sm shadow-yellow-950/30'
-                        : cut.recommendedFormat === 'speaker_left'
-                        ? 'bg-cyan-950/40 text-cyan-300 border-cyan-500/40'
-                        : cut.recommendedFormat === 'speaker_right'
-                        ? 'bg-amber-950/40 text-amber-300 border-amber-500/40'
-                        : cut.recommendedFormat === 'vertical_blur'
-                        ? 'bg-purple-950/40 text-purple-300 border-purple-500/40'
-                        : 'bg-zinc-900 text-zinc-300 border-zinc-800'
-                    }`}
-                  >
-                    <Layout className="w-3 h-3" />
-                    <span>
-                      {cut.recommendedFormat === 'split_screen'
-                        ? '⚡ Split 2 Câmeras (Opus Clip)'
-                        : cut.recommendedFormat === 'speaker_left'
-                        ? '🎙️ Foco no Host (Esq)'
-                        : cut.recommendedFormat === 'speaker_right'
-                        ? '🎙️ Foco no Convidado (Dir)'
-                        : cut.recommendedFormat === 'vertical_blur'
-                        ? '🎬 Fundo Desfocado HD'
-                        : '📱 9:16 Recorte Central'}
-                    </span>
-                  </span>
-
-                  {cut.activeSpeaker && (
-                    <span className="px-2.5 py-1 rounded-xl text-[11px] font-semibold bg-zinc-900 border border-zinc-800 text-zinc-300 flex items-center gap-1">
-                      {cut.activeSpeaker === 'ambos' ? (
-                        <>
-                          <Users className="w-3 h-3 text-pink-400" />
-                          <span>👥 Diálogo entre Ambos</span>
-                        </>
-                      ) : cut.activeSpeaker === 'convidado' ? (
-                        <>
-                          <Mic className="w-3 h-3 text-yellow-400" />
-                          <span>🗣️ Fala do Convidado</span>
-                        </>
-                      ) : (
-                        <>
-                          <Mic className="w-3 h-3 text-cyan-400" />
-                          <span>🗣️ Fala do Host</span>
-                        </>
-                      )}
-                    </span>
-                  )}
-
-                  {cut.subtitleTheme && (
-                    <span className="px-2 py-1 rounded-xl text-[10px] font-semibold bg-zinc-900/80 border border-zinc-800/80 text-zinc-400 flex items-center gap-1">
-                      <Sparkles className="w-2.5 h-2.5 text-yellow-400" />
-                      <span>
-                        {cut.subtitleTheme === 'none'
-                          ? 'Vídeo 100% Limpo'
-                          : cut.subtitleTheme === 'hormozi'
-                          ? 'Legenda Hormozi'
-                          : cut.subtitleTheme === 'beast'
-                          ? 'Legenda MrBeast'
-                          : cut.subtitleTheme === 'cyberpunk'
-                          ? 'Legenda Cyberpunk'
-                          : 'Legenda Discreta'}
-                      </span>
-                    </span>
-                  )}
-                </div>
-
-                {/* Neuromarketing & Cold-Open Climax Hook Info */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                  <div className="p-3 bg-gradient-to-r from-amber-950/30 to-[#0d0e15] border border-amber-500/40 rounded-xl space-y-1">
-                    <span className="text-[10px] font-extrabold text-amber-300 uppercase tracking-wider flex items-center justify-between">
-                      <span>⚡ Gancho Cold-Open Clímax (00:00–00:04)</span>
-                      <span className="px-1.5 py-0.2 rounded bg-amber-500/20 text-[9px] font-mono">
-                        {cut.teaserStartTime || cut.startTime} → {cut.teaserEndTime || cut.endTime}
-                      </span>
-                    </span>
-                    <p className="text-zinc-100 font-bold italic line-clamp-2">
-                      "{cut.teaserText || cut.payoff || cut.hook}"
-                    </p>
-                    <p className="text-[10px] text-amber-200/80">
-                      Copiado do clímax e colocado nos primeiros 4s antes de iniciar o corte.
-                    </p>
-                  </div>
-
-                  <div className="p-3 bg-[#0d0e15] border border-zinc-800/80 rounded-xl space-y-1">
-                    <span className="text-[10px] font-bold text-purple-400 uppercase tracking-wider flex items-center gap-1">
-                      <Brain className="w-3 h-3" />
-                      Gatilho & Legenda Limpa (2 Palavras)
-                    </span>
-                    <p className="text-zinc-200 font-semibold line-clamp-1">{cut.neuromarketingTrigger}</p>
-                    {cut.overlaySubtitlesSample && cut.overlaySubtitlesSample.length > 0 && (
-                      <div className="flex flex-wrap gap-1 pt-1">
-                        {cut.overlaySubtitlesSample.slice(0, 4).map((chunk, cIdx) => (
-                          <span
-                            key={cIdx}
-                            className="px-1.5 py-0.5 rounded bg-zinc-900 border border-zinc-700 text-[9px] font-black text-yellow-300 uppercase"
-                          >
-                            {chunk}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Virality Analysis Explanation */}
-                <p className="text-xs text-zinc-300 leading-relaxed bg-zinc-900/40 p-3 rounded-xl border border-zinc-800/50">
-                  <strong className="text-pink-400">Por que viraliza:</strong> {cut.viralityAnalysis}
-                </p>
-
-                {/* Hashtags */}
-                {cut.hashtags && cut.hashtags.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {cut.hashtags.map((tag, tIdx) => (
-                      <span
-                        key={tIdx}
-                        className="px-2 py-0.5 rounded text-[11px] font-medium bg-purple-950/40 text-purple-300 border border-purple-800/40"
-                      >
-                        {tag.startsWith('#') ? tag : `#${tag}`}
-                      </span>
-                    ))}
-                  </div>
-                )}
-
-                {/* Card Action Buttons */}
-                <div className="flex items-center gap-2.5 pt-2">
-                  <button
-                    onClick={() => onOpenCutInEditor(cut)}
-                    className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#7000ff] to-[#ff0055] hover:opacity-95 text-white text-xs font-bold shadow-md shadow-purple-900/30 transition-all hover:scale-[1.01] active:scale-[0.99]"
-                  >
-                    <Scissors className="w-4 h-4" />
-                    <span>Abrir no Editor & Cortar</span>
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </button>
-
-                  {onEnqueueSingleCut && (
+                    {/* Preview Player button */}
                     <button
-                      onClick={() => {
-                        onEnqueueSingleCut(cut);
-                        setQueueNotice({
-                          count: 1,
-                          message: `⚡ Corte "${cut.title}" adicionado à Fila de Postagem Automática!`,
-                        });
-                        confetti({ particleCount: 30, spread: 50 });
-                      }}
-                      className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl border border-purple-500/40 bg-purple-950/40 hover:bg-purple-900/60 text-purple-200 hover:text-white text-xs font-bold transition shadow-sm"
-                      title="Adicionar este corte à Fila de Auto-Post"
+                      onClick={() => setPreviewingCut(cut)}
+                      className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 hover:text-white text-xs font-bold transition border border-zinc-700"
                     >
-                      <Zap className="w-3.5 h-3.5 text-yellow-400" />
-                      <span className="hidden sm:inline">+ Fila</span>
+                      <Play className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>{isRendered ? 'Assistir Prévia (MP4)' : 'Prévia Rápida'}</span>
                     </button>
-                  )}
 
-                  <button
-                    onClick={() => handleCopyCaption(cut)}
-                    className={`flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border text-xs font-semibold transition ${
-                      isCopied
-                        ? 'bg-emerald-950/60 border-emerald-500/60 text-emerald-300'
-                        : 'bg-zinc-800/80 border-zinc-700/60 text-zinc-300 hover:text-white hover:bg-zinc-700'
-                    }`}
-                    title="Copiar Legenda e Hashtags sugeridas"
-                  >
-                    {isCopied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
-                    <span>{isCopied ? 'Copiada!' : 'Copiar Legenda'}</span>
-                  </button>
+                    {/* Download MP4 button (Direct download) */}
+                    {isRendered && (
+                      <a
+                        href={cut.downloadUrl || `/api/clips/${cut.id}/download`}
+                        download
+                        className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition shadow-md"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>Baixar MP4</span>
+                      </a>
+                    )}
+
+                    {/* Open in Editor Tab */}
+                    <button
+                      onClick={() => onOpenCutInEditor(cut)}
+                      className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-gradient-to-r from-[#7000ff] to-[#ff0055] hover:opacity-95 text-white text-xs font-bold transition"
+                    >
+                      <Scissors className="w-3.5 h-3.5" />
+                      <span>Editar</span>
+                    </button>
+
+                    <button
+                      onClick={() => handleCopyCaption(cut)}
+                      className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-semibold transition ml-auto ${
+                        isCopied
+                          ? 'bg-emerald-950/60 border-emerald-500/60 text-emerald-300'
+                          : 'bg-zinc-800/80 border-zinc-700/60 text-zinc-300 hover:text-white'
+                      }`}
+                    >
+                      {isCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                      <span>{isCopied ? 'Copiada!' : 'Legenda'}</span>
+                    </button>
+                  </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
       </div>
+
+      {/* Real HTML5 Video Preview Modal (Zero Gray Screen Guarantee) */}
+      {previewingCut && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 animate-fadeIn">
+          <div className="relative w-full max-w-lg bg-[#0e1017] border border-zinc-800 rounded-3xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
+              <div className="min-w-0 pr-4">
+                <span className="text-[10px] font-bold text-pink-400 uppercase tracking-wider">
+                  Pré-visualização do Corte
+                </span>
+                <h3 className="text-sm sm:text-base font-extrabold text-white truncate">
+                  {previewingCut.title}
+                </h3>
+              </div>
+              <button
+                onClick={() => setPreviewingCut(null)}
+                className="p-2 rounded-full bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white transition"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Video Player Box */}
+            <div className="relative aspect-[9/16] max-h-[500px] mx-auto rounded-2xl overflow-hidden bg-black border border-zinc-800 flex items-center justify-center">
+              {previewingCut.renderStatus === 'completed' || previewingCut.previewUrl ? (
+                <video
+                  src={previewingCut.previewUrl || `/api/clips/${previewingCut.id}/preview`}
+                  controls
+                  autoPlay
+                  playsInline
+                  preload="metadata"
+                  className="w-full h-full object-contain"
+                />
+              ) : (
+                <div className="p-6 text-center space-y-3">
+                  <div className="w-12 h-12 rounded-full bg-purple-900/30 border border-purple-500/40 text-purple-300 flex items-center justify-center mx-auto">
+                    <Scissors className="w-6 h-6" />
+                  </div>
+                  <h4 className="text-sm font-bold text-white">Este corte ainda não foi renderizado</h4>
+                  <p className="text-xs text-zinc-400 max-w-xs mx-auto">
+                    Clique em renderizar para gerar o arquivo MP4 vertical 9:16 de alta resolução sem tela cinza.
+                  </p>
+                  <button
+                    onClick={async () => {
+                      await handleRenderSingleCut(previewingCut);
+                    }}
+                    className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs shadow-md"
+                  >
+                    Renderizar Agora
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Bottom Actions */}
+            <div className="flex items-center justify-between pt-2">
+              <span className="text-xs text-zinc-400 font-mono">
+                {previewingCut.startTime} → {previewingCut.endTime} ({previewingCut.durationSeconds}s)
+              </span>
+
+              <div className="flex items-center gap-2">
+                {previewingCut.renderStatus === 'completed' && (
+                  <a
+                    href={previewingCut.downloadUrl || `/api/clips/${previewingCut.id}/download`}
+                    download
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition shadow"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    Baixar MP4
+                  </a>
+                )}
+                <button
+                  onClick={() => {
+                    onOpenCutInEditor(previewingCut);
+                    setPreviewingCut(null);
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 text-white text-xs font-bold transition"
+                >
+                  Abrir no Editor
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

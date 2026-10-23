@@ -379,20 +379,12 @@ export default function App() {
     autoPostSettingsRef.current = autoPostSettings;
   }, [autoPostSettings]);
 
-  // 1. Check active user session on startup (with automatic seamless profile activation)
+  // 1. Check active user session on startup
   useEffect(() => {
-    const defaultProfile: AuthUser = {
-      id: 'user_erick',
-      email: 'erickmoreiraguimaraes@gmail.com',
-      name: 'Erick Moreira',
-      picture: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80',
-    };
-
     const checkAuth = async () => {
       const token = getAuthToken();
       if (!token) {
-        // Automatically provide active user profile so nobody is locked out on start
-        setCurrentUser(defaultProfile);
+        setCurrentUser(null);
         setIsCheckingAuth(false);
         return;
       }
@@ -401,10 +393,10 @@ export default function App() {
         if (res.ok && res.data.authenticated && res.data.user) {
           setCurrentUser(res.data.user);
         } else {
-          setCurrentUser(defaultProfile);
+          setCurrentUser(null);
         }
       } catch {
-        setCurrentUser(defaultProfile);
+        setCurrentUser(null);
       } finally {
         setIsCheckingAuth(false);
       }

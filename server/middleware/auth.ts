@@ -18,59 +18,99 @@ declare global {
   }
 }
 
+// Public endpoints that do not require an active session
+const PUBLIC_API_ROUTES = new Set([
+  '/api/auth/me',
+  '/api/auth/google/login',
+  '/api/auth/google/callback',
+  '/api/auth/demo-login',
+  '/api/auth/logout',
+]);
+
+// Periodic cleanup of expired sessions every 30 minutes
+setInterval(() => {
+  try {
+    const nowIso = new Date().toISOString();
+    db.prepare('DELETE FROM user_sessions WHERE expires_at < ?').run(nowIso);
+  } catch (err) {
+    console.warn('[AuthMiddleware] Erro na limpeza periódica de sessões expiradas:', err);
+  }
+}, 30 * 60 * 1000).unref();
+
 /**
- * Extracts session token or userId from headers, cookies or query,
- * verifies the session against SQLite, and attaches req.user and req.userId.
+ * Extracts and strictly verifies session tokens.
+ * ONLY accepts 'Authorization: Bearer <token>' or 'x-session-token'.
+ * Rejects and deletes expired sessions. Enforces 401 on protected routes.
  */
-export function authMiddleware(req: Request, _res: Response, next: NextFunction) {
-  const token =
-    (req.headers['x-session-token'] as string) ||
-    (req.headers['authorization']?.startsWith('Bearer ')
-      ? req.headers['authorization'].slice(7).trim()
-      : null) ||
-    (req.query.sessionToken as string) ||
-    (req.headers['x-user-id'] as string);
+export function authMiddleware(req: Request, res: Response, next: NextFunction) {
+  // Only accept Authorization Bearer or x-session-token header
+  let token: string | null = null;
+  const authHeader = req.headers['authorization'];
+  if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+    token = authHeader.slice(7).trim();
+  } else if (typeof req.headers['x-session-token'] === 'string') {
+    token = req.headers['x-session-token'].trim();
+  }
+
+  req.userId = '';
+  req.user = undefined;
 
   if (token) {
     try {
-      // 1. Check user_sessions table
       const session = db
-        .prepare(`
-          SELECT s.user_id, u.id, u.google_id, u.email, u.name, u.picture
-          FROM user_sessions s
-          JOIN users u ON s.user_id = u.id
-          WHERE s.session_token = ?
-        `)
+        .prepare('SELECT user_id, session_token, expires_at, created_at FROM user_sessions WHERE session_token = ?')
         .get(token) as any;
 
       if (session) {
-        req.user = {
-          id: session.id,
-          google_id: session.google_id,
-          email: session.email,
-          name: session.name,
-          picture: session.picture,
-        };
-        req.userId = session.id;
-        return next();
-      }
+        // Validate expiration
+        const expiresAtMs = new Date(session.expires_at).getTime();
+        if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) {
+          // Session expired -> delete and do not authenticate
+          try {
+            db.prepare('DELETE FROM user_sessions WHERE session_token = ?').run(token);
+          } catch {}
+        } else {
+          // Find user by user_id
+          const user = db
+            .prepare('SELECT id, google_id, email, name, picture FROM users WHERE id = ?')
+            .get(session.user_id) as any;
 
-      // 2. Direct user_id match
-      const directUser = db
-        .prepare('SELECT id, google_id, email, name, picture FROM users WHERE id = ?')
-        .get(token) as any;
-
-      if (directUser) {
-        req.user = directUser;
-        req.userId = directUser.id;
-        return next();
+          if (user) {
+            req.user = {
+              id: user.id,
+              google_id: user.google_id,
+              email: user.email,
+              name: user.name || 'Criador',
+              picture: user.picture,
+            };
+            req.userId = user.id;
+          }
+        }
       }
     } catch (e) {
       console.warn('[AuthMiddleware] Erro ao validar token de sessão:', e);
     }
   }
 
-  // Fallback to default user
-  req.userId = 'default';
-  next();
+  // Allow non-API requests (static assets, SPA entry points, legal pages)
+  if (!req.path.startsWith('/api')) {
+    return next();
+  }
+
+  // Allow explicitly public API endpoints
+  const cleanPath = req.path.replace(/\/$/, '');
+  if (PUBLIC_API_ROUTES.has(cleanPath)) {
+    return next();
+  }
+
+  // If user is authenticated, proceed
+  if (req.user && req.userId) {
+    return next();
+  }
+
+  // Protected API endpoint called without valid authentication
+  return res.status(401).json({
+    error: 'Acesso não autorizado. Faça login para continuar.',
+    code: 'UNAUTHORIZED',
+  });
 }

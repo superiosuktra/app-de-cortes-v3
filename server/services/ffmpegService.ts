@@ -2,8 +2,14 @@ import path from 'path';
 import fs from 'fs';
 import { execFile } from 'child_process';
 import util from 'util';
-import { TEMP_DIR, getSystemFont } from '../config.js';
+import crypto from 'crypto';
+import { TEMP_DIR, BIN_DIR, getSystemFont } from '../config.js';
 import { parseTimeToSeconds } from './geminiService.js';
+import {
+  normalizeSafeYouTubeUrl,
+  validateCutInterval,
+  sanitizeTimestamp,
+} from '../middleware/security.js';
 
 const execFilePromise = util.promisify(execFile);
 
@@ -21,8 +27,11 @@ export function getFfmpegPath(): string {
  * Get executable path for yt-dlp
  */
 export function getYtdlpPath(): string {
-  const localProjectBin = path.join(process.cwd(), 'bin', 'yt-dlp');
+  const localProjectBin = path.join(BIN_DIR, 'yt-dlp');
   if (fs.existsSync(localProjectBin)) {
+    try {
+      fs.chmodSync(localProjectBin, 0o755);
+    } catch {}
     return localProjectBin;
   }
   if (fs.existsSync('/usr/local/bin/yt-dlp')) {
@@ -30,16 +39,6 @@ export function getYtdlpPath(): string {
   }
   if (fs.existsSync('/usr/bin/yt-dlp')) {
     return '/usr/bin/yt-dlp';
-  }
-  const userYtdlp = path.join(
-    process.env.APPDATA || '',
-    'Python',
-    'Python314',
-    'Scripts',
-    'yt-dlp.exe'
-  );
-  if (fs.existsSync(userYtdlp)) {
-    return userYtdlp;
   }
   return 'yt-dlp';
 }
@@ -169,25 +168,37 @@ export async function downloadYouTubeSlice({
   startTime: string;
   endTime: string;
 }): Promise<string> {
-  const randomSuffix = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const safeYt = normalizeSafeYouTubeUrl(videoUrl);
+  if (!safeYt) {
+    throw new Error('URL do YouTube inválida ou bloqueada.');
+  }
+
+  const cleanStart = sanitizeTimestamp(startTime, '00:00');
+  const cleanEnd = sanitizeTimestamp(endTime, '00:30');
+  const intervalCheck = validateCutInterval(cleanStart, cleanEnd, 300);
+  if (!intervalCheck.valid) {
+    throw new Error(intervalCheck.error || 'Intervalo de tempo inválido.');
+  }
+
+  const randomSuffix = `${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
   const outBase = path.join(TEMP_DIR, `yt_raw_${randomSuffix}.mp4`);
   const ffmpegPath = getFfmpegPath();
   const ffmpegDir = path.dirname(ffmpegPath);
   const ytdlpBinary = getYtdlpPath();
   const nodePath = process.execPath;
 
-  console.log(`[YouTube Downloader] Baixando trecho em alta definição 1080p (${startTime} -> ${endTime}) de ${videoUrl}`);
+  console.log(`[YouTube Downloader] Baixando trecho em alta definição 1080p (${cleanStart} -> ${cleanEnd}) de ${safeYt.canonicalUrl}`);
 
-  // 1. Check for cookies file or environment variable
-  const cookieFile = path.join(process.cwd(), 'data', 'cookies.txt');
-  if (!fs.existsSync(cookieFile) && process.env.YOUTUBE_COOKIES) {
+  // Create per-request isolated temporary cookie file if environment cookies exist
+  let tempCookieFile: string | null = null;
+  if (process.env.YOUTUBE_COOKIES) {
     try {
-      fs.writeFileSync(cookieFile, process.env.YOUTUBE_COOKIES, 'utf-8');
+      tempCookieFile = path.join(TEMP_DIR, `cookie_${randomSuffix}.txt`);
+      fs.writeFileSync(tempCookieFile, process.env.YOUTUBE_COOKIES, 'utf-8');
     } catch {}
   }
-  const hasCookieFile = fs.existsSync(cookieFile) && fs.statSync(cookieFile).size > 10;
 
-  const args = [
+  const ytdlpArgs = [
     '--no-playlist',
     '--user-agent',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -197,20 +208,28 @@ export async function downloadYouTubeSlice({
     `node:${nodePath}`,
     '--ffmpeg-location',
     ffmpegDir,
-    ...(hasCookieFile ? ['--cookies', cookieFile] : []),
+    ...(tempCookieFile ? ['--cookies', tempCookieFile] : []),
     '-f',
     'bestvideo[height<=1080]+bestaudio/best[height<=1080]/best',
     '--download-sections',
-    `*${startTime}-${endTime}`,
-    videoUrl,
+    `*${cleanStart}-${cleanEnd}`,
+    '--',
+    safeYt.canonicalUrl,
     '-o',
     outBase,
   ];
 
   try {
-    await execFilePromise(ytdlpBinary, args, { timeout: 150000 });
+    try {
+      // Attempt 1: Direct binary execution
+      await execFilePromise(ytdlpBinary, ytdlpArgs, { timeout: 150000 });
+    } catch (directErr: any) {
+      console.warn('[YouTube Downloader] Tentativa direta falhou, tentando via python3:', directErr?.message || directErr);
+      // Attempt 2: Fallback to python3 execution
+      await execFilePromise('python3', [ytdlpBinary, ...ytdlpArgs], { timeout: 150000 });
+    }
 
-    if (fs.existsSync(outBase)) {
+    if (fs.existsSync(outBase) && fs.statSync(outBase).size > 1000) {
       return outBase;
     }
 
@@ -222,55 +241,27 @@ export async function downloadYouTubeSlice({
         return fullPath;
       }
     }
-  } catch (ytErr: any) {
-    console.warn(
-      '[YouTube Downloader] Aviso: YouTube solicitou verificação de bot ou bloqueou o IP na nuvem:',
-      ytErr?.message || ytErr
-    );
 
-    // If YouTube blocked the cloud IP with bot challenge ("Sign in to confirm you’re not a bot"),
-    // generate an HD studio canvas with audio so the cut rendering never breaks and completes seamlessly!
-    const startSec = parseTimeToSeconds(startTime || '00:00');
-    const endSec = parseTimeToSeconds(endTime || '00:30');
-    const sliceDuration = Math.max(2, endSec - startSec);
+    throw new Error('O arquivo de vídeo não foi gerado pelo downloader do YouTube.');
+  } catch (err: any) {
+    const rawMsg = err?.message || String(err);
+    const isBot =
+      rawMsg.includes('Sign in to confirm you’re not a bot') ||
+      rawMsg.includes('confirm you’re not a bot') ||
+      rawMsg.includes('confirm you\'re not a bot') ||
+      rawMsg.includes('bot');
 
-    const fallbackArgs = [
-      '-y',
-      '-f',
-      'lavfi',
-      '-i',
-      'color=c=0x0f111a:s=1280x720:r=24',
-      '-f',
-      'lavfi',
-      '-i',
-      'anullsrc=r=44100:cl=stereo',
-      '-c:v',
-      'libx264',
-      '-preset',
-      'ultrafast',
-      '-tune',
-      'stillimage',
-      '-pix_fmt',
-      'yuv420p',
-      '-c:a',
-      'aac',
-      '-t',
-      String(sliceDuration),
-      outBase,
-    ];
-
-    try {
-      await execFilePromise(ffmpegPath, fallbackArgs, { timeout: 60000 });
-      if (fs.existsSync(outBase) && fs.statSync(outBase).size > 1000) {
-        console.log(`[YouTube Downloader] Base de alta definição gerada com sucesso para síntese do corte (${sliceDuration}s).`);
-        return outBase;
-      }
-    } catch (fbErr: any) {
-      console.error('[YouTube Downloader] Erro no gerador audiovisual de fallback:', fbErr);
+    if (isBot) {
+      throw new Error('Sign in to confirm you’re not a bot. O YouTube bloqueou o download automático neste IP.');
+    }
+    throw new Error(`Falha no download do YouTube: ${rawMsg.slice(0, 150)}`);
+  } finally {
+    if (tempCookieFile && fs.existsSync(tempCookieFile)) {
+      try {
+        fs.unlinkSync(tempCookieFile);
+      } catch {}
     }
   }
-
-  throw new Error('Falha ao obter o vídeo do YouTube. Configure cookies nas Conexões ou utilize o upload de vídeo local.');
 }
 
 /**

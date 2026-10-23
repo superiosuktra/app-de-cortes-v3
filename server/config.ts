@@ -8,10 +8,12 @@ export const ROOT_DIR = path.resolve(import.meta.dirname, '..');
 export const DATA_DIR = path.join(ROOT_DIR, 'data');
 export const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 export const TEMP_DIR = path.join(DATA_DIR, 'temp');
+export const CLIPS_DIR = path.join(DATA_DIR, 'rendered_clips');
+export const BIN_DIR = path.join(ROOT_DIR, 'bin');
 export const STATE_FILE = path.join(DATA_DIR, 'app_state.json');
 
 // Ensure essential directories exist
-[DATA_DIR, UPLOADS_DIR, TEMP_DIR].forEach((dir) => {
+[DATA_DIR, UPLOADS_DIR, TEMP_DIR, CLIPS_DIR, BIN_DIR].forEach((dir) => {
   if (!fs.existsSync(dir)) {
     try {
       fs.mkdirSync(dir, { recursive: true });
@@ -84,8 +86,9 @@ export function getSystemFont(): string | undefined {
 
 /**
  * Periodic cleanup of old temporary files in TEMP_DIR and UPLOADS_DIR.
+ * Defaults to 4 hours retention to avoid interrupting long renders.
  */
-export function cleanOldTempFiles(maxAgeMs: number = 60 * 60 * 1000) {
+export function cleanOldTempFiles(maxAgeMs: number = 4 * 60 * 60 * 1000) {
   const targetDirs = [TEMP_DIR, UPLOADS_DIR];
   const now = Date.now();
 
@@ -98,7 +101,11 @@ export function cleanOldTempFiles(maxAgeMs: number = 60 * 60 * 1000) {
         try {
           const stats = fs.statSync(filePath);
           if (now - stats.mtimeMs > maxAgeMs) {
-            fs.unlinkSync(filePath);
+            if (stats.isDirectory()) {
+              fs.rmSync(filePath, { recursive: true, force: true });
+            } else {
+              fs.unlinkSync(filePath);
+            }
             console.log(`[Cleaner] Arquivo temporário removido: ${filePath}`);
           }
         } catch {}

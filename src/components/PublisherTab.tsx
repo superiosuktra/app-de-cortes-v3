@@ -33,8 +33,6 @@ import { AutoPostQueueManager, AutoBotStatus } from './AutoPostQueueManager';
 import { fetchJson, authFetch } from '../utils/api';
 import confetti from 'canvas-confetti';
 
-const TOKENS_STORAGE_KEY = 'viral_shorts_platform_tokens_v1';
-
 interface PublisherTabProps {
   currentCut: ViralCut | null;
   savedCuts: SavedCut[];
@@ -133,25 +131,20 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
     else if (platform === 'Kwai') setPreviewPlatform('kwai');
   }, [platform]);
 
-  // Load tokens from localStorage and credentials prop
+  // Load tokens strictly from credentials prop; clear any legacy plaintext tokens from localStorage
   useEffect(() => {
     try {
-      const stored = localStorage.getItem(TOKENS_STORAGE_KEY);
-      let loadedTokens = { youtube: '', instagram: '', tiktok: '', kwai: '' };
-      if (stored) {
-        loadedTokens = { ...loadedTokens, ...JSON.parse(stored) };
-      }
-      if (credentials) {
-        if (credentials.youtube?.accessToken) loadedTokens.youtube = credentials.youtube.accessToken;
-        if (credentials.instagram?.accessToken) loadedTokens.instagram = credentials.instagram.accessToken;
-        if (credentials.tiktok?.accessToken) loadedTokens.tiktok = credentials.tiktok.accessToken;
-        if (credentials.kwai?.accessToken) loadedTokens.kwai = credentials.kwai.accessToken;
-      }
-      setTokens(loadedTokens);
-      if (loadedTokens.youtube) setAccessToken(loadedTokens.youtube);
-    } catch (e) {
-      console.warn('Failed to load platform tokens:', e);
-    }
+      localStorage.removeItem('viral_shorts_platform_tokens_v1');
+    } catch {}
+
+    const loadedTokens = {
+      youtube: credentials?.youtube?.accessToken || '',
+      instagram: credentials?.instagram?.accessToken || '',
+      tiktok: credentials?.tiktok?.accessToken || '',
+      kwai: credentials?.kwai?.accessToken || '',
+    };
+    setTokens(loadedTokens);
+    if (loadedTokens.youtube) setAccessToken(loadedTokens.youtube);
   }, [credentials]);
 
   const handleSaveTokens = (newTokens: { youtube: string; instagram: string; tiktok: string; kwai?: string }) => {
@@ -160,11 +153,6 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
     if (platform === 'Instagram Reels') setAccessToken(newTokens.instagram);
     if (platform === 'TikTok') setAccessToken(newTokens.tiktok);
     if (platform === 'Kwai') setAccessToken(newTokens.kwai || '');
-    try {
-      localStorage.setItem(TOKENS_STORAGE_KEY, JSON.stringify(newTokens));
-    } catch (e) {
-      console.warn('Failed to save platform tokens:', e);
-    }
 
     if (onSaveCredentials && credentials) {
       const updatedCreds: PlatformCredentials = {
