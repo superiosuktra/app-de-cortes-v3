@@ -571,6 +571,24 @@ export const AutoPostQueueManager: React.FC<AutoPostQueueManagerProps> = ({
                     {credentials.tiktok.accessToken ? '● Conectado' : '○ Sem Token'}
                   </span>
                 </label>
+
+                <label className="flex items-center gap-2 text-zinc-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={settings.targetPlatforms.kwai ?? true}
+                    onChange={(e) =>
+                      onUpdateSettings({
+                        targetPlatforms: { ...settings.targetPlatforms, kwai: e.target.checked },
+                      })
+                    }
+                    className="accent-orange-500 rounded"
+                  />
+                  <span className="text-orange-400 font-black text-[10px]">KW</span>
+                  <span>Kwai</span>
+                  <span className={`text-[10px] ml-auto font-mono ${credentials.kwai?.accessToken ? 'text-emerald-400' : 'text-zinc-500'}`}>
+                    {credentials.kwai?.accessToken ? '● Conectado' : '○ Sem Token'}
+                  </span>
+                </label>
               </div>
 
               <button
@@ -745,6 +763,7 @@ export const AutoPostQueueManager: React.FC<AutoPostQueueManagerProps> = ({
                           {p === 'youtube' && <Youtube className="w-3 h-3 text-red-500" />}
                           {p === 'instagram' && <Instagram className="w-3 h-3 text-pink-500" />}
                           {p === 'tiktok' && <span className="text-cyan-400 font-bold text-[9px]">TT</span>}
+                          {p === 'kwai' && <span className="text-orange-400 font-bold text-[9px]">KW</span>}
                           <span className="capitalize">{p}</span>
                         </span>
                       ))}

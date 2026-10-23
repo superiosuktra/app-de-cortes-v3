@@ -65,6 +65,7 @@ function decryptCredentialsObject(creds: any): PersistedCredentials {
   const yt = { ...DEFAULT_STATE.credentials.youtube, ...(creds?.youtube || {}) };
   const ig = { ...DEFAULT_STATE.credentials.instagram, ...(creds?.instagram || {}) };
   const tt = { ...DEFAULT_STATE.credentials.tiktok, ...(creds?.tiktok || {}) };
+  const kw = { ...(DEFAULT_STATE.credentials.kwai || {}), ...(creds?.kwai || {}) };
   const gm = { ...DEFAULT_STATE.credentials.gemini, ...(creds?.gemini || {}) };
   const wh = { ...(creds?.webhooks || {}) };
   const ai = { ...((DEFAULT_STATE.credentials as any).aiConfig || {}), ...(creds?.aiConfig || {}) };
@@ -79,6 +80,9 @@ function decryptCredentialsObject(creds: any): PersistedCredentials {
   tt.accessToken = cleanDecryptedSecret(tt.accessToken);
   tt.clientSecret = cleanDecryptedSecret(tt.clientSecret);
 
+  if (kw.accessToken) kw.accessToken = cleanDecryptedSecret(kw.accessToken);
+  if (kw.appSecret) kw.appSecret = cleanDecryptedSecret(kw.appSecret);
+
   if (gm.apiKey) {
     gm.apiKey = cleanDecryptedSecret(gm.apiKey);
   }
@@ -86,7 +90,7 @@ function decryptCredentialsObject(creds: any): PersistedCredentials {
     gm.model = 'gemini-3.8-flash';
   }
 
-  return { youtube: yt, instagram: ig, tiktok: tt, gemini: gm, webhooks: wh, aiConfig: ai };
+  return { youtube: yt, instagram: ig, tiktok: tt, kwai: kw, gemini: gm, webhooks: wh, aiConfig: ai };
 }
 
 function encryptCredentialsObject(creds: PersistedCredentials): PersistedCredentials {
@@ -107,6 +111,13 @@ function encryptCredentialsObject(creds: PersistedCredentials): PersistedCredent
       accessToken: encryptSecret(creds.tiktok.accessToken),
       clientSecret: encryptSecret(creds.tiktok.clientSecret),
     },
+    kwai: creds.kwai
+      ? {
+          ...creds.kwai,
+          accessToken: encryptSecret(creds.kwai.accessToken),
+          appSecret: encryptSecret(creds.kwai.appSecret),
+        }
+      : undefined,
     gemini: creds.gemini
       ? {
           ...creds.gemini,
@@ -149,6 +160,15 @@ export interface PersistedCredentials {
     clientSecret?: string;
     status: 'connected' | 'disconnected' | 'error';
     displayName?: string;
+    avatar?: string;
+    verifiedAt?: string;
+  };
+  kwai?: {
+    accessToken: string;
+    appId?: string;
+    appSecret?: string;
+    status: 'connected' | 'disconnected' | 'error';
+    accountName?: string;
     avatar?: string;
     verifiedAt?: string;
   };
@@ -212,6 +232,15 @@ const DEFAULT_STATE: PersistedState = {
       clientSecret: '',
       status: 'disconnected',
       displayName: '',
+      avatar: '',
+      verifiedAt: '',
+    },
+    kwai: {
+      accessToken: '',
+      appId: '',
+      appSecret: '',
+      status: 'disconnected',
+      accountName: '',
       avatar: '',
       verifiedAt: '',
     },

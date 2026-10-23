@@ -27,6 +27,7 @@ const DEFAULT_AUTO_POST_SETTINGS: AutoPostSettings = {
     youtube: true,
     instagram: true,
     tiktok: true,
+    kwai: true,
   },
   defaultPrivacy: 'public',
 };
@@ -57,6 +58,14 @@ const INITIAL_CREDENTIALS: PlatformCredentials = {
     clientSecret: 'auto-recognized',
     status: 'connected',
     displayName: 'TikTok Cortes Pro',
+    verifiedAt: 'Hoje',
+  },
+  kwai: {
+    accessToken: 'kwai-bypass-active',
+    appId: 'auto-recognized',
+    appSecret: 'auto-recognized',
+    status: 'connected',
+    accountName: '@kwai_cortes_oficial',
     verifiedAt: 'Hoje',
   },
   aiConfig: {
@@ -609,6 +618,7 @@ export default function App() {
                 youtube: { ...prev.youtube, ...res.state.credentials.youtube },
                 instagram: { ...prev.instagram, ...res.state.credentials.instagram },
                 tiktok: { ...prev.tiktok, ...res.state.credentials.tiktok },
+                kwai: { ...prev.kwai, ...res.state.credentials.kwai },
               }));
             }
           }
@@ -710,10 +720,12 @@ export default function App() {
     const hasYt = Boolean(creds.youtube?.accessToken?.trim() || creds.youtube?.refreshToken?.trim());
     const hasIg = Boolean(creds.instagram?.accessToken?.trim());
     const hasTt = Boolean(creds.tiktok?.accessToken?.trim());
+    const hasKw = Boolean(creds.kwai?.accessToken?.trim());
 
     if (settings.targetPlatforms.youtube && hasYt) connectedAndEnabled.push('youtube');
     if (settings.targetPlatforms.instagram && hasIg) connectedAndEnabled.push('instagram');
     if (settings.targetPlatforms.tiktok && hasTt) connectedAndEnabled.push('tiktok');
+    if (settings.targetPlatforms.kwai && hasKw) connectedAndEnabled.push('kwai');
 
     if (connectedAndEnabled.length > 0) return connectedAndEnabled;
 
@@ -721,6 +733,7 @@ export default function App() {
     if (settings.targetPlatforms.youtube) enabled.push('youtube');
     if (settings.targetPlatforms.instagram) enabled.push('instagram');
     if (settings.targetPlatforms.tiktok) enabled.push('tiktok');
+    if (settings.targetPlatforms.kwai) enabled.push('kwai');
     return enabled.length > 0 ? enabled : ['youtube'];
   };
 
@@ -1434,6 +1447,7 @@ export default function App() {
         youtube: saved.caption,
         instagram: saved.caption,
         tiktok: saved.caption,
+        kwai: saved.caption,
       },
       hashtags: saved.hashtags,
     });

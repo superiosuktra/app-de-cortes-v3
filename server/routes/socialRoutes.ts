@@ -7,8 +7,10 @@ import {
 import {
   verifyInstagramToken,
   verifyTikTokToken,
+  verifyKwaiToken,
   postToInstagram,
   postToTikTok,
+  postToKwai,
   sendWebhookNotification,
 } from '../services/socialService.js';
 import { stateManager } from '../services/stateService.js';
@@ -54,7 +56,9 @@ socialRouter.post('/post-social', async (req: Request, res: Response) => {
           ? serverCreds.instagram.accessToken
           : platform === 'tiktok'
             ? serverCreds.tiktok.accessToken
-            : '';
+            : platform === 'kwai'
+              ? serverCreds.kwai?.accessToken
+              : '';
 
     let cleanToken = (isMaskedToken ? platformVaultToken : rawIncomingToken || '').trim();
 
@@ -213,6 +217,11 @@ socialRouter.post('/post-social', async (req: Request, res: Response) => {
     if (platform === 'tiktok') {
       const ttResult = await postToTikTok({ token: cleanToken, caption, videoUrl });
       return res.json(ttResult);
+    }
+
+    if (platform === 'kwai') {
+      const kwaiResult = await postToKwai({ token: cleanToken, title, caption, videoUrl });
+      return res.json(kwaiResult);
     }
 
     return res.status(400).json({ error: `Plataforma não suportada: ${platform}` });
@@ -515,6 +524,34 @@ socialRouter.post('/verify-token/tiktok', async (req: Request, res: Response) =>
     res.json(result);
   } catch (error: any) {
     res.status(500).json({ valid: false, error: error.message || 'Erro de conexão.' });
+  }
+});
+
+// 5b. Verify Kwai Token
+socialRouter.post('/verify-token/kwai', async (req: Request, res: Response) => {
+  try {
+    const { token } = req.body;
+    const result = await verifyKwaiToken(token, req.userId || 'default');
+    res.json(result);
+  } catch (error: any) {
+    res.status(500).json({ valid: false, error: error.message || 'Erro de conexão com o Kwai.' });
+  }
+});
+
+// 5c. Direct Post to Kwai
+socialRouter.post('/post-kwai', async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId || 'default';
+    const serverCreds = stateManager.getCredentials(userId);
+    const { token, title, caption, videoUrl } = req.body;
+    const cleanToken = (token || serverCreds.kwai?.accessToken || '').trim();
+    if (!cleanToken) {
+      return res.status(400).json({ error: 'Token do Kwai não configurado.' });
+    }
+    const result = await postToKwai({ token: cleanToken, title, caption, videoUrl });
+    res.json(result);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Erro ao publicar no Kwai.' });
   }
 });
 

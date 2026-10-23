@@ -275,6 +275,7 @@ export const ShortsPhonePreview: React.FC<ShortsPhonePreviewProps> = ({
     youtube: { likes: '184 mil', comments: '2.418', shares: 'Compartilhar' },
     tiktok: { likes: '428.5K', comments: '3,892', bookmarks: '78.4K', shares: '15.2K' },
     instagram: { likes: '92,4 mil', comments: '1.294', shares: '19,3 mil' },
+    kwai: { likes: '349.2K', comments: '1,830', shares: '24.1K' },
   };
 
   // Split current 2-word chunk so we can highlight the last word in vibrant color (Submagic karaoke effect)
@@ -323,6 +324,18 @@ export const ShortsPhonePreview: React.FC<ShortsPhonePreviewProps> = ({
           title="Ver prévia com a interface oficial do Instagram Reels"
         >
           <span>📸 Reels</span>
+        </button>
+
+        <button
+          onClick={() => handleSetPlatform('kwai')}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+            platform === 'kwai'
+              ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-md shadow-orange-950/50 scale-[1.02]'
+              : 'text-zinc-400 hover:text-white hover:bg-zinc-800/60'
+          }`}
+          title="Ver prévia com a interface oficial do Kwai"
+        >
+          <span>🔥 Kwai</span>
         </button>
       </div>
 
@@ -406,6 +419,30 @@ export const ShortsPhonePreview: React.FC<ShortsPhonePreviewProps> = ({
                 )}
               </div>
               <Camera className="w-4 h-4 text-white" />
+            </div>
+          )}
+
+          {platform === 'kwai' && (
+            <div className="absolute top-11 left-4 right-4 z-30 flex items-center justify-between text-white pointer-events-none drop-shadow">
+              <div className="flex items-center gap-1.5">
+                <span className="w-5 h-5 rounded-lg bg-gradient-to-tr from-orange-500 to-amber-400 flex items-center justify-center text-[10px] font-black text-white shadow">
+                  K
+                </span>
+                <span className="font-extrabold text-xs tracking-tight text-white">Kwai</span>
+                {resolvedPartBadge && (
+                  <span className="ml-1 px-1.5 py-0.5 rounded bg-black/65 backdrop-blur-sm border border-white/15 text-[9px] font-black text-amber-300">
+                    {resolvedPartBadge}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-3.5 text-xs font-bold">
+                <span className="text-zinc-300">Seguindo</span>
+                <div className="relative">
+                  <span className="text-amber-400 font-extrabold">Para Você</span>
+                  <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-4 h-0.5 bg-amber-400 rounded-full" />
+                </div>
+              </div>
+              <Search className="w-4 h-4 text-white" />
             </div>
           )}
 
@@ -821,6 +858,70 @@ export const ShortsPhonePreview: React.FC<ShortsPhonePreviewProps> = ({
               {/* Instagram Progress Bar */}
               <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-white/20 z-30">
                 <div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 w-3/5" />
+              </div>
+            </>
+          )}
+
+          {platform === 'kwai' && (
+            <>
+              {/* Right Sidebar - Kwai Native Controls */}
+              <div className="absolute right-2.5 bottom-14 z-30 flex flex-col items-center gap-3.5 text-white">
+                {/* Kwai Avatar with Orange Badge */}
+                <div className="relative mb-1">
+                  <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-orange-500 via-amber-400 to-yellow-300 p-[1.5px]">
+                    <div className="w-full h-full bg-zinc-900 rounded-full flex items-center justify-center font-black text-xs text-orange-400">
+                      {channelName[0]?.toUpperCase() || 'K'}
+                    </div>
+                  </div>
+                  <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-4 h-4 rounded-full bg-orange-500 text-white flex items-center justify-center text-[11px] font-bold shadow">
+                    +
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => setIsLiked(!isLiked)}
+                  className="flex flex-col items-center gap-0.5 group active:scale-90 transition-transform"
+                >
+                  <div className="p-2 rounded-full bg-black/40 backdrop-blur-sm">
+                    <Heart className={`w-5 h-5 ${isLiked ? 'fill-orange-500 text-orange-500' : 'text-white'}`} />
+                  </div>
+                  <span className="text-[10px] font-extrabold drop-shadow">{stats.kwai.likes}</span>
+                </button>
+
+                <div className="flex flex-col items-center gap-0.5">
+                  <div className="p-2 rounded-full bg-black/40 backdrop-blur-sm">
+                    <MessageCircle className="w-5 h-5 text-white" />
+                  </div>
+                  <span className="text-[10px] font-extrabold drop-shadow">{stats.kwai.comments}</span>
+                </div>
+
+                <div className="flex flex-col items-center gap-0.5">
+                  <div className="p-2 rounded-full bg-black/40 backdrop-blur-sm">
+                    <Share2 className="w-5 h-5 text-white" />
+                  </div>
+                  <span className="text-[10px] font-extrabold drop-shadow">{stats.kwai.shares}</span>
+                </div>
+
+                <div className="w-7 h-7 rounded-full bg-orange-950 border-2 border-orange-500/70 flex items-center justify-center animate-spin duration-3000 shadow-lg">
+                  <Disc3 className="w-4 h-4 text-orange-400" />
+                </div>
+              </div>
+
+              {/* Bottom Info - Kwai Native Handle & Title */}
+              <div className="absolute left-3 right-16 bottom-4 z-30 text-white pointer-events-none">
+                <span className="text-xs font-black block mb-1 drop-shadow text-amber-300">@{channelName}</span>
+                <p className="text-[11px] text-zinc-100 line-clamp-2 leading-tight drop-shadow font-normal">
+                  {hook || 'Esse vídeo no Kwai vai mudar seu dia! Assista até o fim! 🔥 #Kwai #Cortes #Viral'}
+                </p>
+                <div className="flex items-center gap-1.5 mt-1 text-[10px] text-zinc-200">
+                  <Music2 className="w-3 h-3 text-orange-400 animate-pulse" />
+                  <span className="truncate">♫ som viral - @{channelName}</span>
+                </div>
+              </div>
+
+              {/* Kwai Orange Progress Bar */}
+              <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-white/20 z-30">
+                <div className="h-full bg-gradient-to-r from-orange-500 to-amber-400 w-2/3" />
               </div>
             </>
           )}

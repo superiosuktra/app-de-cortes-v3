@@ -107,10 +107,11 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
   const [caption, setCaption] = useState<string>('');
   const [privacy, setPrivacy] = useState<string>('private');
   const [accessToken, setAccessToken] = useState<string>('');
-  const [tokens, setTokens] = useState<{ youtube: string; instagram: string; tiktok: string }>({
+  const [tokens, setTokens] = useState<{ youtube: string; instagram: string; tiktok: string; kwai?: string }>({
     youtube: '',
     instagram: '',
     tiktok: '',
+    kwai: '',
   });
   const [isGeneratingCaption, setIsGeneratingCaption] = useState<boolean>(false);
   const [isPosting, setIsPosting] = useState<boolean>(false);
@@ -129,20 +130,22 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
     if (platform === 'YouTube Shorts') setPreviewPlatform('youtube');
     else if (platform === 'TikTok') setPreviewPlatform('tiktok');
     else if (platform === 'Instagram Reels') setPreviewPlatform('instagram');
+    else if (platform === 'Kwai') setPreviewPlatform('kwai');
   }, [platform]);
 
   // Load tokens from localStorage and credentials prop
   useEffect(() => {
     try {
       const stored = localStorage.getItem(TOKENS_STORAGE_KEY);
-      let loadedTokens = { youtube: '', instagram: '', tiktok: '' };
+      let loadedTokens = { youtube: '', instagram: '', tiktok: '', kwai: '' };
       if (stored) {
-        loadedTokens = JSON.parse(stored);
+        loadedTokens = { ...loadedTokens, ...JSON.parse(stored) };
       }
       if (credentials) {
         if (credentials.youtube?.accessToken) loadedTokens.youtube = credentials.youtube.accessToken;
         if (credentials.instagram?.accessToken) loadedTokens.instagram = credentials.instagram.accessToken;
         if (credentials.tiktok?.accessToken) loadedTokens.tiktok = credentials.tiktok.accessToken;
+        if (credentials.kwai?.accessToken) loadedTokens.kwai = credentials.kwai.accessToken;
       }
       setTokens(loadedTokens);
       if (loadedTokens.youtube) setAccessToken(loadedTokens.youtube);
@@ -151,11 +154,12 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
     }
   }, [credentials]);
 
-  const handleSaveTokens = (newTokens: { youtube: string; instagram: string; tiktok: string }) => {
+  const handleSaveTokens = (newTokens: { youtube: string; instagram: string; tiktok: string; kwai?: string }) => {
     setTokens(newTokens);
     if (platform === 'YouTube Shorts') setAccessToken(newTokens.youtube);
     if (platform === 'Instagram Reels') setAccessToken(newTokens.instagram);
     if (platform === 'TikTok') setAccessToken(newTokens.tiktok);
+    if (platform === 'Kwai') setAccessToken(newTokens.kwai || '');
     try {
       localStorage.setItem(TOKENS_STORAGE_KEY, JSON.stringify(newTokens));
     } catch (e) {
@@ -180,6 +184,11 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
           accessToken: newTokens.tiktok,
           status: newTokens.tiktok ? 'connected' : credentials.tiktok?.status || 'disconnected',
         },
+        kwai: {
+          accessToken: newTokens.kwai || '',
+          status: newTokens.kwai ? 'connected' : credentials.kwai?.status || 'disconnected',
+          accountName: credentials.kwai?.accountName || '@kwai_criador_pro',
+        },
       };
       onSaveCredentials(updatedCreds);
     }
@@ -201,6 +210,8 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
         setCaption(`${currentCut.caption.youtube}\n\n${currentCut.hashtags.map((h) => (h.startsWith('#') ? h : `#${h}`)).join(' ')}`);
       } else if (platform === 'Instagram Reels') {
         setCaption(`${currentCut.caption.instagram}\n\n${currentCut.hashtags.map((h) => (h.startsWith('#') ? h : `#${h}`)).join(' ')}`);
+      } else if (platform === 'Kwai') {
+        setCaption(`${currentCut.caption.kwai || currentCut.caption.tiktok}\n\n#Kwai #KwaiBrasil #Viral`);
       } else {
         setCaption(`${currentCut.caption.tiktok}\n\n${currentCut.hashtags.map((h) => (h.startsWith('#') ? h : `#${h}`)).join(' ')}`);
       }
@@ -449,6 +460,34 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
         } else {
           setPostStatus(`❌ Erro da API do TikTok: ${res.data?.error || res.error}`);
         }
+      } else if (platform === 'Kwai') {
+        const kwaiToken = (tokens.kwai || credentials?.kwai?.accessToken || '').trim();
+        if (!kwaiToken && credentials?.kwai?.status !== 'connected') {
+          setPostStatus(
+            '❌ Configure o token do Kwai Open Platform acima ou na aba "Configurações" para publicar diretamente no Kwai.'
+          );
+          setIsPosting(false);
+          return;
+        }
+
+        setPostStatus('Conectando ao Kwai Open Platform e publicando corte...');
+        const res = await fetchJson<{ success?: boolean; message?: string; error?: string; videoUrl?: string }>('/api/post-kwai', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            token: kwaiToken,
+            title,
+            caption,
+            videoUrl: videoUrl || (currentCut as any)?.videoUrl,
+          }),
+        });
+
+        if (res.ok && res.data.success) {
+          setPostStatus(`🎉 ${res.data.message || 'Vídeo postado no Kwai com sucesso!'}`);
+          confetti({ particleCount: 70, spread: 60, origin: { y: 0.6 } });
+        } else {
+          setPostStatus(`❌ Erro Kwai: ${res.data?.error || res.error || 'Falha ao enviar vídeo.'}`);
+        }
       } else {
         setPostStatus(
           `A publicação para ${platform} está pronta. Copie o título e a legenda para postar no app da rede.`
@@ -626,6 +665,13 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
                 <span className="text-cyan-400 font-black text-[10px]">TT</span>
                 <span className={tokens.tiktok ? 'text-emerald-400 font-bold' : 'text-zinc-500'}>
                   {tokens.tiktok ? 'TikTok Ativo' : 'TikTok Não Conectado'}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-zinc-900 border border-zinc-800">
+                <span className="text-orange-400 font-black text-[10px]">KW</span>
+                <span className={tokens.kwai ? 'text-emerald-400 font-bold' : 'text-zinc-500'}>
+                  {tokens.kwai ? 'Kwai Ativo' : 'Kwai Não Conectado'}
                 </span>
               </div>
 
@@ -962,6 +1008,55 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
                       }}
                       placeholder="TikTok User Access Token (act...)"
                       className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-purple-500 font-mono"
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Kwai Open Platform Configs */}
+            {platform === 'Kwai' && (
+              <div className="p-4 bg-[#0e0f17] border border-orange-500/30 rounded-2xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="w-4 h-4 rounded bg-gradient-to-tr from-orange-500 to-amber-400 flex items-center justify-center text-[10px] font-black text-white">
+                      K
+                    </span>
+                    <span className="text-xs font-bold text-white">Kwai Open Platform (Direct Publish)</span>
+                  </div>
+                  <button
+                    onClick={() => onNavigateToTab?.('settings')}
+                    className="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-300 hover:text-white transition"
+                  >
+                    Configurar Conexão
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between text-[11px] text-zinc-400 pt-1">
+                  <span className="flex items-center gap-1.5">
+                    <span className={`w-2 h-2 rounded-full ${tokens.kwai ? 'bg-emerald-400 animate-pulse' : 'bg-zinc-600'}`} />
+                    {tokens.kwai ? 'Conta Kwai Conectada' : 'Não conectado'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowManualTokens(!showManualTokens)}
+                    className="text-[10px] text-zinc-500 hover:text-orange-400 transition"
+                  >
+                    {showManualTokens ? '▲ Ocultar Token' : '⚙️ Token Manual'}
+                  </button>
+                </div>
+
+                {showManualTokens && (
+                  <div className="pt-2 animate-fadeIn">
+                    <input
+                      type="password"
+                      value={tokens.kwai || ''}
+                      onChange={(e) => {
+                        const newT = { ...tokens, kwai: e.target.value };
+                        handleSaveTokens(newT);
+                      }}
+                      placeholder="Kwai Access Token (open.kwai.com)"
+                      className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-orange-500 font-mono"
                     />
                   </div>
                 )}

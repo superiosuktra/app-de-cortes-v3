@@ -21,8 +21,15 @@ export function getFfmpegPath(): string {
  * Get executable path for yt-dlp
  */
 export function getYtdlpPath(): string {
+  const localProjectBin = path.join(process.cwd(), 'bin', 'yt-dlp');
+  if (fs.existsSync(localProjectBin)) {
+    return localProjectBin;
+  }
   if (fs.existsSync('/usr/local/bin/yt-dlp')) {
     return '/usr/local/bin/yt-dlp';
+  }
+  if (fs.existsSync('/usr/bin/yt-dlp')) {
+    return '/usr/bin/yt-dlp';
   }
   const userYtdlp = path.join(
     process.env.APPDATA || '',
@@ -192,7 +199,7 @@ export async function downloadYouTubeSlice({
     ffmpegDir,
     ...(hasCookieFile ? ['--cookies', cookieFile] : []),
     '-f',
-    'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best',
+    'bestvideo[height<=1080]+bestaudio/best[height<=1080]/best',
     '--download-sections',
     `*${startTime}-${endTime}`,
     videoUrl,
@@ -232,21 +239,17 @@ export async function downloadYouTubeSlice({
       '-f',
       'lavfi',
       '-i',
-      `color=c=0x0f111a:s=1920x1080:d=${sliceDuration}`,
+      'color=c=0x0f111a:s=1280x720:r=24',
       '-f',
       'lavfi',
       '-i',
-      `anoisesrc=d=${sliceDuration}:c=pink:r=44100:a=0.015`,
-      '-filter_complex',
-      `[0:v]drawbox=x=0:y=0:w=1920:h=1080:color=0x181a29@0.9:t=fill,drawgrid=w=120:h=120:t=1:color=0x262940@0.25[v0];[1:a]volume=0.08[a0]`,
-      '-map',
-      '[v0]',
-      '-map',
-      '[a0]',
+      'anullsrc=r=44100:cl=stereo',
       '-c:v',
       'libx264',
       '-preset',
       'ultrafast',
+      '-tune',
+      'stillimage',
       '-pix_fmt',
       'yuv420p',
       '-c:a',
@@ -257,7 +260,7 @@ export async function downloadYouTubeSlice({
     ];
 
     try {
-      await execFilePromise(ffmpegPath, fallbackArgs, { timeout: 30000 });
+      await execFilePromise(ffmpegPath, fallbackArgs, { timeout: 60000 });
       if (fs.existsSync(outBase) && fs.statSync(outBase).size > 1000) {
         console.log(`[YouTube Downloader] Base de alta definição gerada com sucesso para síntese do corte (${sliceDuration}s).`);
         return outBase;

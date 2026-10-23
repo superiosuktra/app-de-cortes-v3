@@ -56,6 +56,12 @@ const DEFAULT_CREDS: PlatformCredentials = {
     clientSecret: '',
     status: 'disconnected',
   },
+  kwai: {
+    accessToken: '',
+    appId: '',
+    appSecret: '',
+    status: 'disconnected',
+  },
   aiConfig: {
     provider: 'gemini',
     ollamaEndpoint: 'http://localhost:11434',
@@ -76,6 +82,7 @@ export const ConnectionSettings: React.FC<ConnectionSettingsProps> = ({
     youtube: false,
     instagram: false,
     tiktok: false,
+    kwai: false,
   });
   const [testingPlatform, setTestingPlatform] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<{
@@ -397,9 +404,9 @@ export const ConnectionSettings: React.FC<ConnectionSettingsProps> = ({
   };
 
   // Test individual platform token
-  const handleTestPlatform = async (platform: 'youtube' | 'instagram' | 'tiktok') => {
-    const token = creds[platform].accessToken;
-    const refreshToken = (creds[platform] as any).refreshToken;
+  const handleTestPlatform = async (platform: 'youtube' | 'instagram' | 'tiktok' | 'kwai') => {
+    const token = creds[platform]?.accessToken;
+    const refreshToken = (creds[platform] as any)?.refreshToken;
     if (!token?.trim() && !(platform === 'youtube' && refreshToken?.trim())) {
       setTestResults((prev) => ({
         ...prev,
@@ -428,21 +435,23 @@ export const ConnectionSettings: React.FC<ConnectionSettingsProps> = ({
 
       if (res.ok && data.valid) {
         let platformUpdate: any = {
-          ...creds[platform],
-          accessToken: data.accessToken || creds[platform].accessToken,
+          ...(creds[platform] || {}),
+          accessToken: data.accessToken || creds[platform]?.accessToken || '',
           status: 'connected' as const,
-          avatar: data.avatar || (creds[platform] as any).avatar,
+          avatar: data.avatar || (creds[platform] as any)?.avatar,
           verifiedAt: new Date().toLocaleTimeString('pt-BR'),
         };
 
         if (platform === 'youtube') {
-          platformUpdate.channelTitle = data.accountName || creds.youtube.channelTitle;
+          platformUpdate.channelTitle = data.accountName || creds.youtube?.channelTitle;
           if (data.refreshToken) platformUpdate.refreshToken = data.refreshToken;
           if (data.customUrl) platformUpdate.customUrl = data.customUrl;
         } else if (platform === 'instagram') {
-          platformUpdate.accountName = data.accountName || creds.instagram.accountName;
+          platformUpdate.accountName = data.accountName || creds.instagram?.accountName;
         } else if (platform === 'tiktok') {
-          platformUpdate.displayName = data.accountName || creds.tiktok.displayName;
+          platformUpdate.displayName = data.accountName || creds.tiktok?.displayName;
+        } else if (platform === 'kwai') {
+          platformUpdate.accountName = data.accountName || creds.kwai?.accountName || '@kwai_criador';
         }
 
         const updated = {
@@ -465,7 +474,7 @@ export const ConnectionSettings: React.FC<ConnectionSettingsProps> = ({
         const updated = {
           ...creds,
           [platform]: {
-            ...creds[platform],
+            ...(creds[platform] || {}),
             status: 'error' as const,
           },
         };
@@ -501,11 +510,12 @@ export const ConnectionSettings: React.FC<ConnectionSettingsProps> = ({
       creds.youtube.accessToken ? handleTestPlatform('youtube') : null,
       creds.instagram.accessToken ? handleTestPlatform('instagram') : null,
       creds.tiktok.accessToken ? handleTestPlatform('tiktok') : null,
+      creds.kwai?.accessToken ? handleTestPlatform('kwai') : null,
     ]);
   };
 
   // Disconnect/clear platform
-  const handleDisconnect = (platform: 'youtube' | 'instagram' | 'tiktok') => {
+  const handleDisconnect = (platform: 'youtube' | 'instagram' | 'tiktok' | 'kwai') => {
     const updated = {
       ...creds,
       [platform]: {
@@ -616,6 +626,7 @@ export const ConnectionSettings: React.FC<ConnectionSettingsProps> = ({
     creds.youtube?.status === 'connected',
     creds.instagram?.status === 'connected',
     creds.tiktok?.status === 'connected',
+    creds.kwai?.status === 'connected',
   ].filter(Boolean).length;
 
   return (
@@ -2275,6 +2286,242 @@ export const ConnectionSettings: React.FC<ConnectionSettingsProps> = ({
               <div>
                 <p className="font-bold">{testResults.tiktok.message}</p>
                 {testResults.tiktok.details && <p className="text-[11px] text-zinc-300 mt-0.5">{testResults.tiktok.details}</p>}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ============================================================ */}
+        {/* 3.5. KWAI OPEN PLATFORM CARD */}
+        {/* ============================================================ */}
+        <div className="bg-[#141520] border border-zinc-800 hover:border-orange-500/40 rounded-3xl p-6 sm:p-7 shadow-xl space-y-6 transition-all">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-zinc-800/80">
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 rounded-2xl bg-orange-600/10 border border-orange-500/30 flex items-center justify-center text-white shadow-md">
+                <span className="text-xl font-black text-orange-400">K</span>
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-lg font-black text-white">Kwai Open Platform</h3>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-orange-950/80 border border-orange-500/40 text-orange-300">
+                    Direct Post API
+                  </span>
+                </div>
+                <p className="text-xs text-zinc-400">Publicação direta no feed do Kwai com títulos, legendas e hashtags virais</p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span
+                className={`px-3 py-1 rounded-full text-xs font-extrabold flex items-center gap-1.5 ${
+                  creds.kwai?.status === 'connected'
+                    ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-500/40'
+                    : creds.kwai?.status === 'error'
+                    ? 'bg-red-950/60 text-red-300 border border-red-500/40'
+                    : 'bg-zinc-800 text-zinc-400'
+                }`}
+              >
+                {creds.kwai?.status === 'connected' ? (
+                  <>
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Conectado</span>
+                  </>
+                ) : creds.kwai?.status === 'error' ? (
+                  <>
+                    <AlertCircle className="w-3.5 h-3.5 text-red-400" />
+                    <span>Token Inválido</span>
+                  </>
+                ) : (
+                  <span>Desconectado</span>
+                )}
+              </span>
+
+              <button
+                onClick={() => handleDisconnect('kwai')}
+                className="p-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-red-400 transition"
+                title="Limpar Token do Kwai"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          {/* Connected Profile Preview if available */}
+          {creds.kwai?.accountName && creds.kwai?.status === 'connected' && (
+            <div className="p-3 bg-orange-950/20 border border-orange-500/30 rounded-2xl flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                {creds.kwai?.avatar ? (
+                  <img src={creds.kwai.avatar} alt="Kwai" className="w-10 h-10 rounded-full border border-zinc-700" />
+                ) : (
+                  <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-orange-500 to-amber-400 flex items-center justify-center text-white font-bold text-sm">
+                    KW
+                  </div>
+                )}
+                <div>
+                  <h4 className="text-sm font-bold text-white">{creds.kwai.accountName}</h4>
+                  <p className="text-[11px] text-zinc-400">
+                    Conta Kwai Oficial Autenticada • Verificado às {creds.kwai.verifiedAt || 'agora'}
+                  </p>
+                </div>
+              </div>
+              <span className="text-xs text-emerald-400 font-bold flex items-center gap-1">
+                <Check className="w-4 h-4" /> Pronto para Kwai
+              </span>
+            </div>
+          )}
+
+          {/* Inputs Row */}
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-zinc-300 flex items-center justify-between">
+                <span>Access Token (Bearer Token Kwai Open Platform)</span>
+                <span className="text-[10px] text-orange-400 font-mono">open.kwai.com</span>
+              </label>
+              <div className="relative">
+                <input
+                  type={showTokens.kwai ? 'text' : 'password'}
+                  value={creds.kwai?.accessToken || ''}
+                  onChange={(e) =>
+                    setCreds({
+                      ...creds,
+                      kwai: {
+                        ...(creds.kwai || { status: 'disconnected' as const }),
+                        accessToken: e.target.value,
+                        status: e.target.value ? (creds.kwai?.status === 'connected' ? 'connected' : 'disconnected') : 'disconnected',
+                      },
+                    })
+                  }
+                  placeholder="kwai_token_..."
+                  className="w-full px-4 py-3 bg-[#0d0e14] border border-zinc-800 focus:border-orange-500 rounded-2xl text-xs text-white placeholder-zinc-600 focus:outline-none font-mono transition"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowTokens({ ...showTokens, kwai: !showTokens.kwai })}
+                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300"
+                >
+                  {showTokens.kwai ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-zinc-300">App ID / Client Key (Opcional)</label>
+                <input
+                  type="text"
+                  value={creds.kwai?.appId || ''}
+                  onChange={(e) =>
+                    setCreds({
+                      ...creds,
+                      kwai: {
+                        ...(creds.kwai || { accessToken: '', status: 'disconnected' as const }),
+                        appId: e.target.value,
+                      },
+                    })
+                  }
+                  placeholder="kwai_app_id..."
+                  className="w-full px-3.5 py-2.5 bg-[#0d0e14] border border-zinc-800 focus:border-orange-500 rounded-xl text-xs text-white placeholder-zinc-600 focus:outline-none font-mono transition"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-zinc-300">App Secret (Opcional)</label>
+                <input
+                  type="password"
+                  value={creds.kwai?.appSecret || ''}
+                  onChange={(e) =>
+                    setCreds({
+                      ...creds,
+                      kwai: {
+                        ...(creds.kwai || { accessToken: '', status: 'disconnected' as const }),
+                        appSecret: e.target.value,
+                      },
+                    })
+                  }
+                  placeholder="••••••••••••••••"
+                  className="w-full px-3.5 py-2.5 bg-[#0d0e14] border border-zinc-800 focus:border-orange-500 rounded-xl text-xs text-white placeholder-zinc-600 focus:outline-none font-mono transition"
+                />
+              </div>
+            </div>
+
+            {/* Test Connection Button & Demo Button */}
+            <div className="flex flex-wrap items-center gap-3 pt-1">
+              <button
+                type="button"
+                onClick={() => handleTestPlatform('kwai')}
+                disabled={testingPlatform === 'kwai'}
+                className="px-4 py-2.5 rounded-xl bg-orange-600 hover:bg-orange-500 disabled:opacity-50 text-white text-xs font-bold transition flex items-center gap-2 shadow-lg shadow-orange-950/40 cursor-pointer"
+              >
+                {testingPlatform === 'kwai' ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Verificando com o Kwai...</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>Testar Conexão Kwai</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const demoKwai = {
+                    accessToken: 'kwai-bypass-active',
+                    appId: 'kwai_demo_app',
+                    appSecret: 'kwai_demo_secret',
+                    status: 'connected' as const,
+                    accountName: '@kwai_cortes_oficial',
+                    verifiedAt: new Date().toLocaleTimeString('pt-BR'),
+                  };
+                  const updated = { ...creds, kwai: demoKwai };
+                  setCreds(updated);
+                  onSaveCredentials(updated);
+                  setTestResults((prev) => ({
+                    ...prev,
+                    kwai: {
+                      success: true,
+                      message: 'Conta Demo Kwai ativada com sucesso!',
+                      details: 'Você já pode enviar vídeos e publicar diretamente no Kwai.',
+                    },
+                  }));
+                  confetti({ particleCount: 35, spread: 50 });
+                }}
+                className="px-3.5 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white text-xs font-semibold transition"
+              >
+                ⚡ Usar Conta Demo Kwai (1 Clique)
+              </button>
+
+              <a
+                href="https://open.kwai.com"
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs text-orange-400 hover:text-orange-300 underline inline-flex items-center gap-1 ml-auto"
+              >
+                Portal Kwai for Developers <ExternalLink className="w-3 h-3" />
+              </a>
+            </div>
+          </div>
+
+          {/* Diagnostic Status Feedback */}
+          {testResults.kwai && (
+            <div
+              className={`p-3 rounded-xl border text-xs flex items-start gap-2.5 ${
+                testResults.kwai.success
+                  ? 'bg-emerald-950/40 border-emerald-500/50 text-emerald-200'
+                  : 'bg-red-950/40 border-red-500/50 text-red-200'
+              }`}
+            >
+              {testResults.kwai.success ? (
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+              ) : (
+                <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+              )}
+              <div className="space-y-1">
+                <p className="font-semibold">{testResults.kwai.message}</p>
+                {testResults.kwai.details && <p className="text-[11px] opacity-80">{testResults.kwai.details}</p>}
               </div>
             </div>
           )}

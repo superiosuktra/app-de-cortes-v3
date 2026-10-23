@@ -58,6 +58,7 @@ export interface ViralCut {
     youtube: string;
     instagram: string;
     tiktok: string;
+    kwai?: string;
     facebook?: string;
     linkedin?: string;
   };
@@ -206,13 +207,22 @@ export interface PlatformCredentials {
     verifiedAt?: string;
     status: 'connected' | 'disconnected' | 'error';
   };
+  kwai?: {
+    accessToken: string;
+    appId?: string;
+    appSecret?: string;
+    accountName?: string;
+    avatar?: string;
+    verifiedAt?: string;
+    status: 'connected' | 'disconnected' | 'error';
+  };
   brandKit?: BrandKit;
   aiConfig?: AiProviderConfig;
   webhooks?: WebhookConfig;
 }
 
 export type QueueItemStatus = 'pending' | 'posting' | 'published' | 'failed' | 'paused';
-export type SocialPlatform = 'youtube' | 'instagram' | 'tiktok' | 'facebook' | 'linkedin';
+export type SocialPlatform = 'youtube' | 'instagram' | 'tiktok' | 'kwai' | 'facebook' | 'linkedin';
 
 export interface QueueItem {
   id: string;
@@ -231,6 +241,7 @@ export interface QueueItem {
     youtube: string;
     instagram: string;
     tiktok: string;
+    kwai?: string;
     facebook?: string;
     linkedin?: string;
   };
@@ -255,6 +266,7 @@ export interface AutoPostSettings {
     youtube: boolean;
     instagram: boolean;
     tiktok: boolean;
+    kwai?: boolean;
     facebook?: boolean;
     linkedin?: boolean;
   };
