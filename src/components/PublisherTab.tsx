@@ -29,7 +29,6 @@ import {
 } from 'lucide-react';
 import { ViralCut, SavedCut, QueueItem, AutoPostSettings, PlatformCredentials, VideoInfo, SocialPlatform } from '../types';
 import { ShortsPhonePreview } from './ShortsPhonePreview';
-import { ApiSetupModal } from './ApiSetupModal';
 import { AutoPostQueueManager, AutoBotStatus } from './AutoPostQueueManager';
 import { fetchJson, authFetch } from '../utils/api';
 import confetti from 'canvas-confetti';
@@ -62,6 +61,7 @@ interface PublisherTabProps {
   autoBotStatus?: AutoBotStatus;
   onSkipWaitAndPostNow?: (id?: string) => Promise<void>;
   onRescheduleEvery5Minutes?: () => void;
+  onNavigateToTab?: (tab: 'trending' | 'analyze' | 'editor' | 'publish' | 'settings') => void;
 }
 
 export const PublisherTab: React.FC<PublisherTabProps> = ({
@@ -90,6 +90,7 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
   autoBotStatus,
   onSkipWaitAndPostNow,
   onRescheduleEvery5Minutes,
+  onNavigateToTab,
 }) => {
   const [activeSubTab, setActiveSubTab] = useState<'queue' | 'manual'>(
     queue.length > 0 ? 'queue' : 'manual'
@@ -111,7 +112,6 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
     instagram: '',
     tiktok: '',
   });
-  const [isApiModalOpen, setIsApiModalOpen] = useState<boolean>(false);
   const [isGeneratingCaption, setIsGeneratingCaption] = useState<boolean>(false);
   const [isPosting, setIsPosting] = useState<boolean>(false);
   const [postStatus, setPostStatus] = useState<string>('');
@@ -525,7 +525,10 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
         </div>
 
         <button
-          onClick={() => setIsApiModalOpen(true)}
+          onClick={() => {
+            if (onNavigateToTab) onNavigateToTab('settings');
+            else setShowManualTokens((prev) => !prev);
+          }}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700/80 text-zinc-300 hover:text-white text-xs font-semibold transition shadow-sm"
         >
           <Settings className="w-3.5 h-3.5 text-purple-400" />
@@ -546,7 +549,10 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
           onTriggerNextNow={onTriggerNextQueueNow}
           onToggleQueueActive={onToggleQueueActive}
           credentials={credentials}
-          onOpenApiModal={() => setIsApiModalOpen(true)}
+          onOpenApiModal={() => {
+            if (onNavigateToTab) onNavigateToTab('settings');
+            else setShowManualTokens((prev) => !prev);
+          }}
           onSwitchToDemoAndPost={onSwitchToDemoAndPost}
           onStartAutoBot={onStartAutoBot}
           autoBotStatus={autoBotStatus}
@@ -624,7 +630,10 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
               </div>
 
               <button
-                onClick={() => setIsApiModalOpen(true)}
+                onClick={() => {
+                  if (onNavigateToTab) onNavigateToTab('settings');
+                  else setShowManualTokens((prev) => !prev);
+                }}
                 className="ml-auto text-purple-400 hover:text-purple-300 font-semibold underline text-[10px]"
               >
                 Gerenciar Chaves
@@ -793,7 +802,7 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
                       <span>{credentials?.youtube?.status === 'connected' ? 'Reconectar Google' : 'Entrar com o Google'}</span>
                     </button>
                     <button
-                      onClick={() => setIsApiModalOpen(true)}
+                      onClick={() => onNavigateToTab?.('settings')}
                       className="text-[10px] text-purple-400 hover:text-purple-300 font-semibold"
                     >
                       Opções
@@ -852,7 +861,7 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
                       <div className="flex items-center justify-end">
                         <button
                           type="button"
-                          onClick={() => setIsApiModalOpen(true)}
+                          onClick={() => onNavigateToTab?.('settings')}
                           className="text-xs text-purple-400 hover:text-purple-300 font-medium inline-flex items-center gap-1"
                         >
                           <Settings className="w-3.5 h-3.5" />
@@ -874,7 +883,7 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
                     <span className="text-xs font-bold text-white">Meta Graph API (Instagram Reels)</span>
                   </div>
                   <button
-                    onClick={() => setIsApiModalOpen(true)}
+                    onClick={() => onNavigateToTab?.('settings')}
                     className="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-300 hover:text-white transition"
                   >
                     Configurar Conexão
@@ -921,7 +930,7 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
                     <span className="text-xs font-bold text-white">TikTok Content Posting API</span>
                   </div>
                   <button
-                    onClick={() => setIsApiModalOpen(true)}
+                    onClick={() => onNavigateToTab?.('settings')}
                     className="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-300 hover:text-white transition"
                   >
                     Configurar Conexão
@@ -1154,7 +1163,7 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
 
                     <button
                       type="button"
-                      onClick={() => setIsApiModalOpen(true)}
+                      onClick={() => onNavigateToTab?.('settings')}
                       className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-semibold text-[11px] flex items-center gap-1 transition"
                     >
                       <Key className="w-3.5 h-3.5 text-yellow-400" />
@@ -1344,13 +1353,7 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
       </div>
       )}
 
-      {/* Official APIs Setup Modal */}
-      <ApiSetupModal
-        isOpen={isApiModalOpen}
-        onClose={() => setIsApiModalOpen(false)}
-        savedTokens={tokens}
-        onSaveTokens={handleSaveTokens}
-      />
+      {/* Library or manual fallback info if needed */}
     </div>
   );
 };

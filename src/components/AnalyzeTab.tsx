@@ -23,7 +23,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { VideoInfo, ViralCut, AutoPostSettings } from '../types';
+import { VideoInfo, ViralCut, AutoPostSettings, CutIntent } from '../types';
 import { fetchJson } from '../utils/api';
 import confetti from 'canvas-confetti';
 
@@ -89,6 +89,7 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
   onDeleteEditCut,
 }) => {
   const [cutsCount, setCutsCount] = useState<number>(8);
+  const [cutIntent, setCutIntent] = useState<CutIntent>('viral_hook');
   const [retentionStrategyOption, setRetentionStrategyOption] = useState<1 | 2 | 3>(3);
   const [isLoadingInfo, setIsLoadingInfo] = useState<boolean>(false);
   const [isLoadingTranscript, setIsLoadingTranscript] = useState<boolean>(false);
@@ -179,6 +180,7 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
           videoUrl,
           transcript,
           userPrompt,
+          intent: cutIntent,
           videoTitle: videoInfo?.title,
           channelName: videoInfo?.author,
           cutsCount,
@@ -394,6 +396,44 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
               <p className="text-[10px] text-zinc-400 leading-tight">
                 A IA analisa e distribui os <strong>{cutsCount} cortes</strong> em sequência contínua a partir do momento de maior retenção.
               </p>
+            </div>
+
+            {/* Cut Intent Selector (Parâmetros de Seleção Customizáveis) */}
+            <div className="space-y-2.5 p-3.5 bg-[#171825] border border-cyan-500/20 rounded-2xl">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-white flex items-center gap-1.5">
+                  <Brain className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Intenção Editorial do Corte</span>
+                </label>
+                <span className="text-[10px] font-bold text-cyan-300 bg-cyan-500/10 px-2 py-0.5 rounded-full border border-cyan-500/30">
+                  Critério de Seleção IA
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {[
+                  { id: 'viral_hook' as const, label: '⚡ Gancho Viral', desc: 'Máxima retenção nos primeiros 3s' },
+                  { id: 'comedy' as const, label: '😂 Humor & Risadas', desc: 'Momentos cômicos e piadas' },
+                  { id: 'controversy' as const, label: '🔥 Polêmica & Debate', desc: 'Opiniões fortes e contrapontos' },
+                  { id: 'storytelling' as const, label: '📖 Storytelling', desc: 'Histórias reais com suspense' },
+                  { id: 'educational' as const, label: '🎓 Educativo & Aula', desc: 'Passo a passo e ensinamentos' },
+                  { id: 'motivational' as const, label: '🚀 Motivação & Foco', desc: 'Choque de realidade e disciplina' },
+                ].map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setCutIntent(item.id)}
+                    className={`p-2.5 text-left rounded-xl transition-all border ${
+                      cutIntent === item.id
+                        ? 'bg-gradient-to-r from-cyan-950/60 to-purple-950/60 border-cyan-400 text-white shadow-md ring-1 ring-cyan-500/30'
+                        : 'bg-[#0f1017] hover:bg-zinc-800 border-zinc-800 text-zinc-400'
+                    }`}
+                  >
+                    <div className="text-[11px] font-bold text-zinc-200">{item.label}</div>
+                    <div className="text-[9px] text-zinc-400 mt-0.5 leading-tight">{item.desc}</div>
+                  </button>
+                ))}
+              </div>
             </div>
 
             {/* 3-Option Viral Retention & Clean Screen Strategy Selector (Default: Option 3) */}

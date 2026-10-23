@@ -332,6 +332,40 @@ export const EditorTab: React.FC<EditorTabProps> = ({
     confetti({ particleCount: 35, spread: 50 });
   };
 
+  const handleExportPremiereXml = async () => {
+    try {
+      const res = await authFetch('/api/export-xml', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: overlayTitle,
+          videoTitle: videoInfo?.title || 'Podcast',
+          videoUrl: videoUrl,
+          startTime,
+          endTime,
+          durationSeconds: duration,
+          hook: customHook || selectedCut?.hook,
+          payoff: selectedCut?.payoff,
+          partBadge: selectedCut?.partBadge,
+        }),
+      });
+      if (!res.ok) throw new Error('Falha ao exportar XML');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const cleanTitle = (overlayTitle || 'corte_viral').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 30);
+      a.download = `${cleanTitle}_premiere.xml`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      confetti({ particleCount: 35, spread: 50 });
+    } catch (err: any) {
+      console.error(err);
+    }
+  };
+
   return (
     <div className="space-y-8 animate-fadeIn">
       {/* Top Editing Queue Bar (Fila de Edição) */}
@@ -1019,6 +1053,15 @@ export const EditorTab: React.FC<EditorTabProps> = ({
               >
                 <FileText className="w-4 h-4 text-cyan-400" />
                 <span>Baixar Legendas (.SRT)</span>
+              </button>
+
+              <button
+                onClick={handleExportPremiereXml}
+                className="flex items-center gap-2 px-4 py-3 rounded-xl bg-indigo-950/60 hover:bg-indigo-900/80 border border-indigo-500/40 text-indigo-200 hover:text-white text-xs font-bold transition shadow-sm"
+                title="Exportar timeline XML (FCP7/Premiere) para edição profissional no Adobe Premiere Pro e DaVinci Resolve"
+              >
+                <Sliders className="w-4 h-4 text-indigo-400" />
+                <span>Exportar XML (Premiere Pro)</span>
               </button>
 
               {onEnqueueCut && (

@@ -75,7 +75,7 @@ videoRouter.post('/trending', handleTrending);
 // 4. Detect & Analyze Viral Cuts with Gemini + Multimodal Framing + Sequential Continuation Engine
 async function handleAnalyze(req: Request, res: Response) {
   try {
-    const { videoUrl, transcript, userPrompt, videoTitle, channelName, cutsCount } = req.body;
+    const { videoUrl, transcript, userPrompt, intent, videoTitle, channelName, cutsCount } = req.body;
     const safeYt = normalizeSafeYouTubeUrl(videoUrl);
     const cleanUrl = safeYt?.canonicalUrl || videoUrl || 'https://www.youtube.com/watch?v=B57eOqeLVfc';
 
@@ -83,6 +83,7 @@ async function handleAnalyze(req: Request, res: Response) {
       videoUrl: cleanUrl,
       transcript: transcript || '',
       userPrompt,
+      intent,
       videoTitle,
       channelName,
       cutsCount: cutsCount ? Number(cutsCount) : 6,
@@ -234,11 +235,84 @@ videoRouter.post('/gemini/verify', async (req: Request, res: Response) => {
 videoRouter.get('/gemini/status', (req: Request, res: Response) => {
   const activeKey = resolveGeminiApiKey(req.userId);
   const hasKey = Boolean(activeKey);
+  const creds = stateManager.getCredentials(req.userId || 'default');
   res.json({
     configured: hasKey,
     model: GEMINI_TEXT_MODEL,
     hasEnvKey: hasKey,
+    aiConfig: creds.aiConfig,
   });
+});
+
+// 9. Test Local AI (Ollama / LM Studio) Endpoint
+videoRouter.post('/ai/test-local', async (req: Request, res: Response) => {
+  const endpoint = String(req.body?.endpoint || 'http://localhost:11434').trim().replace(/\/$/, '');
+  const model = String(req.body?.model || 'llama3:8b').trim();
+
+  const startTime = Date.now();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 4000);
+
+  try {
+    const tagsRes = await fetch(`${endpoint}/api/tags`, {
+      method: 'GET',
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    const latencyMs = Date.now() - startTime;
+
+    if (!tagsRes.ok) {
+      return res.status(400).json({
+        success: false,
+        error: `Ollama respondeu com status ${tagsRes.status}. Verifique se o endpoint está correto.`,
+      });
+    }
+
+    const data: any = await tagsRes.json();
+    const models: string[] = Array.isArray(data?.models)
+      ? data.models.map((m: any) => m.name || m.model).filter(Boolean)
+      : [];
+
+    return res.json({
+      success: true,
+      latencyMs,
+      endpoint,
+      models,
+      hasRequestedModel: models.some((m) => m.toLowerCase().includes(model.toLowerCase())),
+      message: `Conectado com sucesso ao Ollama local (${latencyMs}ms)! ${models.length} modelo(s) encontrado(s).`,
+    });
+  } catch (err: any) {
+    clearTimeout(timeoutId);
+    const latencyMs = Date.now() - startTime;
+    const isTimeout = err.name === 'AbortError';
+    return res.status(502).json({
+      success: false,
+      latencyMs,
+      error: isTimeout
+        ? `Tempo limite excedido (4s) ao tentar conectar em ${endpoint}. Verifique se o Ollama está rodando ('ollama serve').`
+        : `Não foi possível conectar em ${endpoint}: ${err.message || 'Serviço offline'}. Certifique-se de que o Ollama ou servidor local está ativo.`,
+    });
+  }
+});
+
+// 10. Export Adobe Premiere Pro / DaVinci Resolve Timeline XML (xmeml v5)
+videoRouter.post('/export-xml', async (req: Request, res: Response) => {
+  try {
+    const { generatePremiereXml } = await import('../services/xmlExportService.js');
+    const cut = req.body?.cut || req.body;
+    if (!cut || !cut.startTime || !cut.endTime) {
+      return res.status(400).json({ error: 'Parâmetros de corte (startTime, endTime) ausentes.' });
+    }
+    const xml = generatePremiereXml(cut);
+    const safeTitle = (cut.title || 'Corte_Viral')
+      .replace(/[^a-zA-Z0-9_-]/g, '_')
+      .slice(0, 35);
+    res.setHeader('Content-Type', 'application/xml');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeTitle}_premiere.xml"`);
+    res.send(xml);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Erro ao gerar arquivo XML do Premiere Pro.' });
+  }
 });
 
 

@@ -67,6 +67,7 @@ function decryptCredentialsObject(creds: any): PersistedCredentials {
   const tt = { ...DEFAULT_STATE.credentials.tiktok, ...(creds?.tiktok || {}) };
   const gm = { ...DEFAULT_STATE.credentials.gemini, ...(creds?.gemini || {}) };
   const wh = { ...(creds?.webhooks || {}) };
+  const ai = { ...((DEFAULT_STATE.credentials as any).aiConfig || {}), ...(creds?.aiConfig || {}) };
 
   yt.accessToken = cleanDecryptedSecret(yt.accessToken);
   yt.refreshToken = cleanDecryptedSecret(yt.refreshToken);
@@ -85,7 +86,7 @@ function decryptCredentialsObject(creds: any): PersistedCredentials {
     gm.model = 'gemini-3.8-flash';
   }
 
-  return { youtube: yt, instagram: ig, tiktok: tt, gemini: gm, webhooks: wh };
+  return { youtube: yt, instagram: ig, tiktok: tt, gemini: gm, webhooks: wh, aiConfig: ai };
 }
 
 function encryptCredentialsObject(creds: PersistedCredentials): PersistedCredentials {
@@ -113,6 +114,7 @@ function encryptCredentialsObject(creds: PersistedCredentials): PersistedCredent
         }
       : undefined,
     webhooks: creds.webhooks,
+    aiConfig: creds.aiConfig,
   };
 }
 
@@ -161,6 +163,16 @@ export interface PersistedCredentials {
     telegramBotToken?: string;
     telegramChatId?: string;
   };
+  aiConfig?: {
+    provider: 'gemini' | 'ollama' | 'claude' | 'openai';
+    ollamaEndpoint: string;
+    ollamaModel: string;
+    activeModel: string;
+    openaiApiKey?: string;
+    anthropicApiKey?: string;
+    status?: 'connected' | 'disconnected' | 'testing';
+    latencyMs?: number;
+  };
 }
 
 export interface PersistedState {
@@ -208,6 +220,14 @@ const DEFAULT_STATE: PersistedState = {
       status: 'disconnected',
       model: 'gemini-3.8-flash',
       verifiedAt: '',
+    },
+    aiConfig: {
+      provider: 'gemini',
+      ollamaEndpoint: 'http://localhost:11434',
+      ollamaModel: 'llama3:8b',
+      activeModel: 'gemini-3.8-flash',
+      status: 'connected',
+      latencyMs: 0,
     },
   },
   savedCuts: [],
@@ -343,6 +363,19 @@ class StateManager {
           !creds.gemini.model || creds.gemini.model.includes('gemini-2.5')
             ? 'gemini-3.8-flash'
             : creds.gemini.model,
+      };
+    }
+    if (creds.aiConfig) {
+      const prevAi = state.credentials.aiConfig || DEFAULT_STATE.credentials.aiConfig!;
+      state.credentials.aiConfig = {
+        ...prevAi,
+        ...creds.aiConfig,
+      };
+    }
+    if (creds.webhooks) {
+      state.credentials.webhooks = {
+        ...state.credentials.webhooks,
+        ...creds.webhooks,
       };
     }
     this.scheduleSave(key);

@@ -166,12 +166,12 @@ class LiveClippingManager {
       channelName: channel.channelName,
       cutsCount: 6,
       userId,
-      cutIntent: channel.targetIntent,
+      intent: channel.targetIntent,
     });
 
     // Notify Webhook if configured
     await sendWebhookNotification({
-      type: 'live_stream_clipped',
+      type: 'cut_ready',
       title: `⚡ Live Finalizada & 6 Cortes Gerados Automaticamente: ${channel.channelName}`,
       videoUrl: channel.channelUrl,
       platform: channel.platform,
@@ -181,7 +181,7 @@ class LiveClippingManager {
     return {
       success: true,
       channel,
-      cuts,
+      cuts: cuts as any,
       message: `✅ Transmissão de ${channel.channelName} processada com sucesso! 6 cortes sequenciais com intenção "${channel.targetIntent}" foram gerados.`,
     };
   }

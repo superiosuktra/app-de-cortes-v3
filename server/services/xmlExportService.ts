@@ -3,7 +3,15 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { parseTimeToSeconds } from './ffmpegService.js';
+function parseTimeToSeconds(timeStr: string): number {
+  const clean = (timeStr || '').replace(/[\[\]\s]/g, '');
+  const parts = clean.split(':').map((p) => parseInt(p, 10));
+  if (parts.some((n) => isNaN(n))) return 0;
+  if (parts.length === 1) return parts[0];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  return 0;
+}
 
 interface XmlCutData {
   title: string;

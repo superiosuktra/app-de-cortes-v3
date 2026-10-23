@@ -70,6 +70,45 @@ export function getGeminiClient(userId?: string): GoogleGenAI {
   return client;
 }
 
+async function generateWithOllama(
+  endpoint: string,
+  model: string,
+  prompt: string,
+  system?: string
+): Promise<string> {
+  const cleanEndpoint = (endpoint || 'http://localhost:11434').trim().replace(/\/$/, '');
+  const cleanModel = model || 'llama3:8b';
+  const fullPrompt = system
+    ? `${system}\n\nRetorne estritamente um array JSON válido sem markdown ou explicações.\n\n${prompt}`
+    : prompt;
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout for local LLM
+
+  try {
+    const res = await fetch(`${cleanEndpoint}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: cleanModel,
+        prompt: fullPrompt,
+        stream: false,
+        format: 'json',
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    if (!res.ok) {
+      throw new Error(`Ollama HTTP ${res.status}`);
+    }
+    const data: any = await res.json();
+    return data?.response || '';
+  } catch (err) {
+    clearTimeout(timeoutId);
+    throw err;
+  }
+}
+
 async function generateWithFallback(
   userId: string | undefined,
   params: { model: string; contents: any; config?: any }
@@ -1598,6 +1637,7 @@ export async function analyzeViralCuts({
   videoUrl,
   transcript,
   userPrompt,
+  intent,
   videoTitle,
   channelName,
   cutsCount = 6,
@@ -1606,19 +1646,32 @@ export async function analyzeViralCuts({
   videoUrl: string;
   transcript: string;
   userPrompt?: string;
+  intent?: string;
   videoTitle?: string;
   channelName?: string;
   cutsCount?: number;
   userId?: string;
 }) {
   const videoId = extractVideoId(videoUrl) || 'B57eOqeLVfc';
+  const intentDescription =
+    intent === 'comedy'
+      ? 'foco em momentos cômicos, piadas espontâneas e quebras de expectativa engraçadas'
+      : intent === 'controversy'
+      ? 'foco em opiniões polêmicas, declarações contra-intuitivas e debates fortes'
+      : intent === 'storytelling'
+      ? 'foco em histórias envolventes, relatos pessoais e arcos narrativos com suspense'
+      : intent === 'educational'
+      ? 'foco em lições práticas, explicações passo a passo e conceitos ensinados claramente'
+      : intent === 'motivational'
+      ? 'foco em choque de realidade, disciplina inabalável e superação'
+      : 'encontrar a parte de fala mais interessante e chamativa para o público com máximo gancho de retenção';
+
   const directive =
     userPrompt?.trim() ||
-    'encontrar a parte de fala mais interessante e chamativa para o público e criar cortes em sequência contínua (Parte 1, Parte 2, Parte 3...)';
+    `criar cortes em sequência contínua (Parte 1, Parte 2, Parte 3...) com ${intentDescription}`;
   const targetCount = Math.max(4, Math.min(12, cutsCount));
 
   // 1. Always fetch the real YouTube transcript + "Most Replayed" Heatmap for this videoId
-  // so we never rely on short/demo placeholder text or blind timestamps!
   const [realTranscriptData, detectedFraming] = await Promise.all([
     fetchTranscript(videoId),
     analyzeVideoFraming({ videoUrl, videoId, videoTitle, userId }),
@@ -1642,6 +1695,12 @@ export async function analyzeViralCuts({
     cutsCount: targetCount,
   }).map((c) => ({
     ...c,
+    intent: (intent as any) || 'viral_hook',
+    caption: {
+      ...c.caption,
+      facebook: `${c.title}\n\nAssista à sequência completa!\n#Reels #Cortes #Viral`,
+      linkedin: `Reflexão extraída de "${videoTitle || 'Podcast'}": ${c.hook}\n\nO que você pensa sobre esse ponto de vista? #Liderança #Carreira #Inovação`,
+    },
     framing: {
       speaker1X: detectedFraming.speaker1X,
       speaker1Y: detectedFraming.speaker1Y,
@@ -1653,12 +1712,15 @@ export async function analyzeViralCuts({
     },
   }));
 
-  // 3. If Gemini API key is configured and we have real speech, let Gemini craft hyper-engaging titles, hooks, and captions
-  // for each of the sequential parts while locking the exact continuous timestamps (Parte 1 -> Parte 2 -> Parte 3...)!
+  // 3. Sequential Narrative Continuation Cuts with AI (Gemini Cloud or Ollama Local)
   const sequentialSlices = buildSequentialStorySlices(effectiveSegments, effectiveHeatmap, targetCount);
 
   const activeKey = resolveGeminiApiKey(userId);
-  if (activeKey && sequentialSlices.some((s) => s.spokenTranscript.length > 20)) {
+  const userCreds = stateManager.getCredentials(userId || 'default');
+  const aiConfig = userCreds?.aiConfig;
+  const isOllama = aiConfig?.provider === 'ollama' && Boolean(aiConfig.ollamaEndpoint);
+
+  if ((activeKey || isOllama) && sequentialSlices.some((s) => s.spokenTranscript.length > 20)) {
     const slicesPromptBlock = sequentialSlices
       .map(
         (s) =>
@@ -1667,95 +1729,117 @@ export async function analyzeViralCuts({
       .join('\n\n');
 
     const systemInstruction = `
-Você é um diretor especialista em cortes virais de podcasts para YouTube Shorts, TikTok e Reels.
-O nosso detector de retenção já encontrou a fala mais interessante e chamativa do vídeo (ignorando introduções e patrocinadores) e dividiu essa mesma fala em ${targetCount} PARTES SEQUENCIAIS CONTÍNUAS (Parte 1, Parte 2 - Continuação, Parte 3 - Continuação...), onde cada corte continua exatamente de onde o corte anterior parou.
-
+Você é um diretor especialista em cortes virais de podcasts para YouTube Shorts, TikTok, Instagram Reels, Facebook Reels e LinkedIn Video.
+O nosso detector de retenção já encontrou a fala mais interessante e chamativa do vídeo e dividiu em ${targetCount} PARTES SEQUENCIAIS CONTÍNUAS (Parte 1, Parte 2 - Continuação, Parte 3 - Continuação...).
+Intenção do corte: ${intentDescription}.
 Diretriz do criador: "${directive}"
 
-Sua missão:
 Para cada uma das ${targetCount} partes sequenciais abaixo, crie:
-1. "title": Título super magnético em maiúsculas com emoji, começando obrigatoriamente com "[PARTE X]" (ex: "🔥 [PARTE 1] O SEGREDO QUE MUDOU...", "🔥 [PARTE 2 - CONTINUAÇÃO] POR QUE O CÉREBRO..."). O título DEVE refletir o assunto real dito na fala daquele trecho!
+1. "title": Título super magnético em maiúsculas com emoji, começando com "[PARTE X]".
 2. "hook": A frase inicial mais forte dita no começo daquele trecho.
-3. "payoff": A frase de fechamento/conclusão daquele trecho que deixa vontade de ver a próxima parte.
-4. "neuromarketingTrigger": O gatilho mental daquela parte.
-5. "viralityAnalysis": Explicação curta mostrando o nexo da fala e como ela continua a parte anterior.
-6. "caption": Legendas prontas para youtube, instagram e tiktok avisando que faz parte de uma sequência ("Parte X - Veja a continuação no próximo vídeo!").
-7. MANTENHA EXATAMENTE os tempos "startTime" e "endTime" fornecidos para cada Parte para não quebrar a continuação!
+3. "payoff": A frase de fechamento/conclusão daquele trecho.
+4. "neuromarketingTrigger": O gatilho mental.
+5. "viralityAnalysis": Explicação curta da sequência.
+6. "caption": Legendas prontas com chaves 'youtube', 'instagram', 'tiktok', 'facebook', 'linkedin'.
+7. MANTENHA EXATAMENTE os tempos "startTime" e "endTime" fornecidos.
 `;
 
-    try {
-      const response = await generateWithFallback(userId, {
-        model: GEMINI_TEXT_MODEL,
-        contents: `Vídeo: ${videoTitle || 'Podcast em Alta'} (${channelName || 'YouTube'})\n\n${slicesPromptBlock}`,
-        config: {
-          systemInstruction,
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                title: { type: Type.STRING },
-                hook: { type: Type.STRING },
-                payoff: { type: Type.STRING },
-                neuromarketingTrigger: { type: Type.STRING },
-                viralityAnalysis: { type: Type.STRING },
-                recommendedFormat: { type: Type.STRING },
-                activeSpeaker: { type: Type.STRING },
-                subtitleTheme: { type: Type.STRING },
-                caption: {
-                  type: Type.OBJECT,
-                  properties: {
-                    youtube: { type: Type.STRING },
-                    instagram: { type: Type.STRING },
-                    tiktok: { type: Type.STRING },
+    let aiParts: any[] = [];
+
+    // First attempt: Ollama Local if configured by the user
+    if (isOllama) {
+      try {
+        console.log(`[GeminiService] Executando com IA Local Ollama (${aiConfig?.ollamaModel || 'llama3:8b'})...`);
+        const localRaw = await generateWithOllama(
+          aiConfig!.ollamaEndpoint,
+          aiConfig!.ollamaModel,
+          `Vídeo: ${videoTitle || 'Podcast em Alta'} (${channelName || 'YouTube'})\n\n${slicesPromptBlock}`,
+          systemInstruction
+        );
+        const parsed = JSON.parse(localRaw.trim() || '[]');
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          aiParts = parsed;
+        }
+      } catch (localErr: any) {
+        console.warn('[GeminiService] Aviso: Falha na IA Local Ollama, acionando fallback:', localErr?.message);
+      }
+    }
+
+    // Fallback or Primary: Gemini Cloud if activeKey
+    if (aiParts.length === 0 && activeKey) {
+      try {
+        const response = await generateWithFallback(userId, {
+          model: GEMINI_TEXT_MODEL,
+          contents: `Vídeo: ${videoTitle || 'Podcast em Alta'} (${channelName || 'YouTube'})\n\n${slicesPromptBlock}`,
+          config: {
+            systemInstruction,
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  title: { type: Type.STRING },
+                  hook: { type: Type.STRING },
+                  payoff: { type: Type.STRING },
+                  neuromarketingTrigger: { type: Type.STRING },
+                  viralityAnalysis: { type: Type.STRING },
+                  recommendedFormat: { type: Type.STRING },
+                  activeSpeaker: { type: Type.STRING },
+                  subtitleTheme: { type: Type.STRING },
+                  caption: {
+                    type: Type.OBJECT,
+                    properties: {
+                      youtube: { type: Type.STRING },
+                      instagram: { type: Type.STRING },
+                      tiktok: { type: Type.STRING },
+                      facebook: { type: Type.STRING },
+                      linkedin: { type: Type.STRING },
+                    },
+                    required: ['youtube', 'instagram', 'tiktok'],
                   },
-                  required: ['youtube', 'instagram', 'tiktok'],
+                  hashtags: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                  },
                 },
-                hashtags: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                },
-                overlaySubtitlesSample: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                },
+                required: ['title', 'hook', 'payoff', 'neuromarketingTrigger', 'viralityAnalysis', 'caption', 'hashtags'],
               },
-              required: ['title', 'hook', 'payoff', 'neuromarketingTrigger', 'viralityAnalysis', 'caption', 'hashtags'],
             },
           },
-        },
-      });
-
-      const aiParts = JSON.parse(response.text?.trim() || '[]');
-      if (Array.isArray(aiParts) && aiParts.length > 0) {
-        return baseSequentialCuts.map((baseCut, idx) => {
-          const aiCut = aiParts[idx];
-          if (!aiCut) return baseCut;
-          const partPrefix = idx === 0 ? '[PARTE 1]' : `[PARTE ${idx + 1}]`;
-          const rawTitle = String(aiCut.title || baseCut.title);
-          const finalTitle = rawTitle.toUpperCase().includes('PARTE')
-            ? rawTitle
-            : `${partPrefix} ${rawTitle}`;
-
-          return {
-            ...baseCut,
-            title: finalTitle.slice(0, 95),
-            hook: aiCut.hook || baseCut.hook,
-            payoff: aiCut.payoff || baseCut.payoff,
-            neuromarketingTrigger: aiCut.neuromarketingTrigger || baseCut.neuromarketingTrigger,
-            viralityAnalysis: aiCut.viralityAnalysis || baseCut.viralityAnalysis,
-            caption: aiCut.caption || baseCut.caption,
-            hashtags: Array.isArray(aiCut.hashtags) && aiCut.hashtags.length > 0 ? aiCut.hashtags : baseCut.hashtags,
-            overlaySubtitlesSample:
-              Array.isArray(aiCut.overlaySubtitlesSample) && aiCut.overlaySubtitlesSample.length > 0
-                ? aiCut.overlaySubtitlesSample
-                : baseCut.overlaySubtitlesSample,
-          };
         });
+
+        aiParts = JSON.parse(response.text?.trim() || '[]');
+      } catch (geminiErr: any) {
+        console.warn('[GeminiService] Aviso: Análise do Gemini falhou, usando cortes heurísticos:', geminiErr?.message);
       }
-    } catch (err) {
-      console.warn('[GeminiService] Aviso ao enriquecer sequência com Gemini, usando sequência real extraída:', err);
+    }
+
+    if (Array.isArray(aiParts) && aiParts.length > 0) {
+      return baseSequentialCuts.map((baseCut, idx) => {
+        const aiCut = aiParts[idx];
+        if (!aiCut) return baseCut;
+        const partPrefix = idx === 0 ? '[PARTE 1]' : `[PARTE ${idx + 1}]`;
+        const rawTitle = String(aiCut.title || baseCut.title);
+        const finalTitle = rawTitle.toUpperCase().includes('PARTE')
+          ? rawTitle
+          : `${partPrefix} ${rawTitle}`;
+
+        return {
+          ...baseCut,
+          intent: (intent as any) || 'viral_hook',
+          title: finalTitle.slice(0, 95),
+          hook: aiCut.hook || baseCut.hook,
+          payoff: aiCut.payoff || baseCut.payoff,
+          neuromarketingTrigger: aiCut.neuromarketingTrigger || baseCut.neuromarketingTrigger,
+          viralityAnalysis: aiCut.viralityAnalysis || baseCut.viralityAnalysis,
+          caption: {
+            ...baseCut.caption,
+            ...(aiCut.caption || {}),
+          },
+          hashtags: Array.isArray(aiCut.hashtags) && aiCut.hashtags.length > 0 ? aiCut.hashtags : baseCut.hashtags,
+        };
+      });
     }
   }
 
