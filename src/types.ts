@@ -179,6 +179,7 @@ export interface AiProviderConfig {
   ollamaModel: string;
   activeModel: string;
   openaiApiKey?: string;
+  openAiKey?: string;
   anthropicApiKey?: string;
   status?: 'connected' | 'disconnected' | 'testing';
   latencyMs?: number;
@@ -189,7 +190,7 @@ export interface LiveStreamChannel {
   platform: 'twitch' | 'youtube' | 'kick';
   channelName: string;
   channelUrl: string;
-  avatar: string;
+  avatar?: string;
   isLive: boolean;
   streamTitle?: string;
   viewerCount?: number;
@@ -207,6 +208,7 @@ export interface PlatformCredentials {
     clientId?: string;
     clientSecret?: string;
     channelTitle?: string;
+    accountName?: string;
     customUrl?: string;
     avatar?: string;
     verifiedAt?: string;
@@ -257,6 +259,12 @@ export interface PlatformCredentials {
     avatar?: string;
     verifiedAt?: string;
     status: 'connected' | 'disconnected' | 'error';
+  };
+  gemini?: {
+    apiKey?: string;
+    model?: string;
+    status?: 'connected' | 'disconnected' | 'error';
+    verifiedAt?: string;
   };
   brandKit?: BrandKit;
   aiConfig?: AiProviderConfig;

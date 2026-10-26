@@ -3,15 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-function parseTimeToSeconds(timeStr: string): number {
-  const clean = (timeStr || '').replace(/[\[\]\s]/g, '');
-  const parts = clean.split(':').map((p) => parseInt(p, 10));
-  if (parts.some((n) => isNaN(n))) return 0;
-  if (parts.length === 1) return parts[0];
-  if (parts.length === 2) return parts[0] * 60 + parts[1];
-  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-  return 0;
-}
+import { parseTimeToSeconds } from '../middleware/security.js';
 
 interface XmlCutData {
   title: string;
@@ -32,8 +24,10 @@ interface XmlCutData {
  */
 export function generatePremiereXml(cut: XmlCutData): string {
   const fps = 30;
-  const startSec = parseTimeToSeconds(cut.startTime || '00:00');
-  const endSec = parseTimeToSeconds(cut.endTime || '00:30');
+  const rawStart = parseTimeToSeconds(cut.startTime || '00:00');
+  const rawEnd = parseTimeToSeconds(cut.endTime || '00:30');
+  const startSec = Number.isNaN(rawStart) ? 0 : rawStart;
+  const endSec = Number.isNaN(rawEnd) ? startSec + 30 : rawEnd;
   const durationSec = cut.durationSeconds || Math.max(1, endSec - startSec);
 
   const startFrame = Math.round(startSec * fps);

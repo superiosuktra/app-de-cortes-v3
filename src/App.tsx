@@ -324,22 +324,14 @@ export default function App() {
   const [isCheckingAuth, setIsCheckingAuth] = useState<boolean>(true);
   const [activeTab, setActiveTab] = useState<'trending' | 'analyze' | 'editor' | 'publish' | 'settings'>('trending');
   const [credentials, setCredentials] = useState<PlatformCredentials>(INITIAL_CREDENTIALS);
-  const [videoUrl, setVideoUrl] = useState<string>('https://www.youtube.com/watch?v=B57eOqeLVfc');
-  const [videoInfo, setVideoInfo] = useState<VideoInfo | null>({
-    videoId: 'B57eOqeLVfc',
-    videoUrl: 'https://www.youtube.com/watch?v=B57eOqeLVfc',
-    title: 'O PODER DA DISCIPLINA (COM RENATO CARIANI) | Joel Jota',
-    author: 'Joel Jota',
-    thumbnail: 'https://img.youtube.com/vi/B57eOqeLVfc/maxresdefault.jpg',
-  });
-  const [transcript, setTranscript] = useState<string>(
-    '[38:17] Eu fazia ações e quando eu não tinha esses resultados muito bem claros eu corria atrás até entregar.\n[38:42] Ser uma pessoa competitiva é uma arma poderosa: qualquer coisa nunca está bom.\n[39:06] Quando eu entrei na área digital e comecei a gravar, construí o maior canal de musculação do mundo começando do zero.\n[39:55] Eu tenho várias competições silenciosas comigo mesmo para nunca acomodar.\n[40:43] No começo do ano todo mundo faz promessa, mas quem não é condicionado morre no meio do caminho antes da linha de chegada.\n[41:30] Competitividade e metas claras fazem parte de todo profissional de sucesso.\n[42:21] Disciplina não é um estado sazonal: é um padrão diário inegociável.'
-  );
+  const [videoUrl, setVideoUrl] = useState<string>('');
+  const [videoInfo, setVideoInfo] = useState<VideoInfo | null>(null);
+  const [transcript, setTranscript] = useState<string>('');
   const [userPrompt, setUserPrompt] = useState<string>(
     'encontrar a parte de fala mais interessante e chamativa para o público e criar cortes em sequência contínua (Parte 1, Parte 2, Parte 3...)'
   );
-  const [viralCuts, setViralCuts] = useState<ViralCut[]>(DEFAULT_VIRAL_CUTS);
-  const [selectedCut, setSelectedCut] = useState<ViralCut | null>(DEFAULT_VIRAL_CUTS[0]);
+  const [viralCuts, setViralCuts] = useState<ViralCut[]>([]);
+  const [selectedCut, setSelectedCut] = useState<ViralCut | null>(null);
   const [savedCuts, setSavedCuts] = useState<SavedCut[]>([]);
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [autoPostSettings, setAutoPostSettings] = useState<AutoPostSettings>(DEFAULT_AUTO_POST_SETTINGS);
@@ -481,22 +473,7 @@ export default function App() {
         const parsed = JSON.parse(stored).filter((c: any) => !isLegacyRandomCut(c));
         setSavedCuts(parsed);
       } else {
-        setSavedCuts([
-          {
-            id: 'sample-seq-cut-1',
-            videoTitle: 'O PODER DA DISCIPLINA (COM RENATO CARIANI) | Joel Jota',
-            videoUrl: 'https://www.youtube.com/watch?v=B57eOqeLVfc',
-            cutTitle: '🔥 [PARTE 1] SER UMA PESSOA COMPETITIVA É UMA ARMA PODEROSA — Renato Cariani',
-            startTime: '38:17',
-            endTime: '39:06',
-            durationSeconds: 49,
-            format: 'split_screen',
-            viralityScore: 99,
-            caption: '🔥 [PARTE 1] — "Ser uma pessoa competitiva é uma arma poderosa!"\n\n⏭️ A Parte 2 (continuação direta) sai em instantes!',
-            hashtags: ['Shorts', 'Disciplina', 'RenatoCariani'],
-            createdAt: new Date().toLocaleDateString('pt-BR'),
-          },
-        ]);
+        setSavedCuts([]);
       }
 
       // Load queue
@@ -505,28 +482,7 @@ export default function App() {
         const parsedQ = JSON.parse(storedQueue).filter((q: any) => q.status === 'published' || !isLegacyRandomCut(q));
         setQueue(parsedQ);
       } else {
-        const nowMs = Date.now();
-        const defaultSeqQueue: QueueItem[] = DEFAULT_VIRAL_CUTS.map((c, idx) => ({
-          id: `sample-seq-queue-${idx + 1}`,
-          cutId: c.id,
-          videoTitle: 'O PODER DA DISCIPLINA (COM RENATO CARIANI) | Joel Jota',
-          videoUrl: 'https://www.youtube.com/watch?v=B57eOqeLVfc',
-          cutTitle: c.title,
-          startTime: c.startTime,
-          endTime: c.endTime,
-          durationSeconds: c.durationSeconds,
-          format: c.recommendedFormat,
-          viralityScore: c.viralityScore,
-          hook: c.hook,
-          payoff: c.payoff,
-          caption: c.caption,
-          hashtags: c.hashtags,
-          platforms: ['youtube'],
-          scheduledFor: new Date(nowMs + (idx + 1) * 5 * 60 * 1000).toISOString(),
-          status: 'pending',
-          createdAt: new Date(nowMs).toISOString(),
-        }));
-        setQueue(defaultSeqQueue);
+        setQueue([]);
       }
 
       // Load auto post settings
@@ -1186,11 +1142,11 @@ export default function App() {
       const queuedUrls = new Set(queueRef.current.map((q) => q.videoUrl));
       const chosenVideo =
         trendingList.find((v) => v?.url && !queuedUrls.has(v.url)) ||
-        trendingList[0] || {
-          title: 'O PODER DA DISCIPLINA (COM RENATO CARIANI) | Os Sócios 160',
-          url: 'https://www.youtube.com/watch?v=B57eOqeLVfc',
-          channel: 'Os Sócios Podcast',
-        };
+        trendingList[0];
+
+      if (!chosenVideo?.url) {
+        throw new Error('Nenhum vídeo em alta disponível no momento. Selecione um vídeo manualmente.');
+      }
 
       const targetUrl: string = chosenVideo.url;
       const targetTitle: string = chosenVideo.title || 'Podcast em Alta';
@@ -1225,6 +1181,7 @@ export default function App() {
         }),
       ]);
 
+      const fallbackVidId = chosenVideo.videoId || targetUrl.match(/[?&]v=([A-Za-z0-9_-]{11})/)?.[1] || '';
       const fetchedInfo: VideoInfo = infoRes.ok && infoRes.data?.videoId
         ? {
             videoId: infoRes.data.videoId,
@@ -1234,11 +1191,11 @@ export default function App() {
             thumbnail: infoRes.data.thumbnail || `https://img.youtube.com/vi/${infoRes.data.videoId}/maxresdefault.jpg`,
           }
         : {
-            videoId: 'B57eOqeLVfc',
+            videoId: fallbackVidId,
             videoUrl: targetUrl,
             title: targetTitle,
             author: chosenVideo.channel || 'Canal YouTube',
-            thumbnail: 'https://img.youtube.com/vi/B57eOqeLVfc/maxresdefault.jpg',
+            thumbnail: fallbackVidId ? `https://img.youtube.com/vi/${fallbackVidId}/maxresdefault.jpg` : '',
           };
 
       const fetchedTranscript: string =

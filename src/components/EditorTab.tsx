@@ -104,7 +104,7 @@ export const EditorTab: React.FC<EditorTabProps> = ({
   const videoId =
     videoInfo?.videoId ||
     videoUrl.match(/(?:v=|\/v\/|embed\/|youtu\.be\/|\/shorts\/|\/live\/)([A-Za-z0-9_-]{11})/)?.[1] ||
-    'B57eOqeLVfc';
+    '';
 
   // Trigger Gemini Multimodal Vision to detect face coordinates on real scene frames
   const handleDetectAiFraming = async () => {

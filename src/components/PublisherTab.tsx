@@ -1182,7 +1182,7 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
             {/* Post / Submit Button */}
             <button
               onClick={handlePost}
-              disabled={isPosting}
+              disabled={isPosting || (!videoFile && !videoUrl?.trim() && !(currentCut as any)?.videoUrl)}
               className="w-full py-4 rounded-2xl bg-gradient-to-r from-[#7000ff] via-[#b000ff] to-[#ff0055] text-white font-black text-sm shadow-xl shadow-purple-900/40 hover:shadow-pink-900/50 hover:scale-[1.01] active:scale-[0.99] transition-all disabled:opacity-50 flex items-center justify-center gap-2"
             >
               <Send className={`w-4 h-4 ${isPosting ? 'animate-bounce' : ''}`} />
