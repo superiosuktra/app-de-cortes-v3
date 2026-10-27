@@ -71,3 +71,11 @@ npm run lint
 3. **Persistência Atômica**: Gravações com escrita atômica via arquivo temporário + renomeação (`.tmp` → `.json`), com criação de backup prévio (`.bak`).
 4. **Proteção contra Injeção de Comandos**: Validação estrita de URLs do YouTube (`normalizeSafeYouTubeUrl`), rejeição de metacaracteres de shell e uso do delimitador `--` em comandos de linha.
 5. **Mitigação de SSRF**: Restrição estrita de endpoints de teste de modelos locais (Ollama), bloqueando redes privadas e serviços de metadados em produção.
+
+---
+
+## 📶 Status PWA / Modo Offline
+
+> **Nota:** O suporte a PWA/offline está temporariamente desativado. A aplicação funciona exclusivamente em modo online.
+
+O arquivo `public/sw.js` presente no repositório é um *self-unregistering Service Worker* — ele existe apenas para remover automaticamente quaisquer registros de Service Worker legados que possam ter sido instalados em versões anteriores da aplicação. Após todos os usuários terem recebido essa atualização, o arquivo pode ser removido junto com as referências ao `manifest.json`.

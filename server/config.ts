@@ -13,15 +13,19 @@ export const BIN_DIR = path.join(ROOT_DIR, 'bin');
 export const STATE_FILE = path.join(DATA_DIR, 'app_state.json');
 
 // Ensure essential directories exist
-[DATA_DIR, UPLOADS_DIR, TEMP_DIR, CLIPS_DIR, BIN_DIR].forEach((dir) => {
-  if (!fs.existsSync(dir)) {
-    try {
-      fs.mkdirSync(dir, { recursive: true });
-    } catch (err) {
-      console.warn(`[Config] Não foi possível criar diretório ${dir}:`, err);
+export function ensureDirectories() {
+  [DATA_DIR, UPLOADS_DIR, TEMP_DIR, CLIPS_DIR, BIN_DIR].forEach((dir) => {
+    if (!fs.existsSync(dir)) {
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+      } catch (err) {
+        console.warn(`[Config] Não foi possível criar diretório ${dir}:`, err);
+      }
     }
-  }
-});
+  });
+}
+
+ensureDirectories();
 
 // Environment Configuration
 export const PORT = Number(process.env.PORT) || 3000;

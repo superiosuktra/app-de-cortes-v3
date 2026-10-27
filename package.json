@@ -7,11 +7,11 @@
     "dev": "tsx server.ts",
     "build": "vite build && npm run build:server",
     "build:server": "esbuild server.ts --platform=node --bundle --format=esm --packages=external --outfile=dist/server.js",
-    "start": "NODE_ENV=production node dist/server.js",
+    "start": "cross-env NODE_ENV=production node dist/server.js",
     "preview": "vite preview",
     "clean": "node -e \"const fs=require('fs'); fs.rmSync('dist',{recursive:true,force:true}); fs.rmSync('server.js',{force:true});\"",
     "lint": "tsc --noEmit",
-    "test": "tsx --test $(find server -name '*.test.ts')"
+    "test": "node scripts/run-tests.mjs"
   },
   "dependencies": {
     "@distube/ytdl-core": "^5.0.1",
@@ -40,7 +40,8 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "autoprefixer": "^10.4.21",
-    "esbuild": "^0.25.0",
+    "cross-env": "^7.0.3",
+    "esbuild": "^0.28.0",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",
     "typescript": "^7.0.2"

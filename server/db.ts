@@ -198,12 +198,18 @@ class Statement {
     // 4. Delete user_sessions by token
     if (s.includes('delete from user_sessions')) {
       const [token] = params;
+      const hashed = token ? hashSessionToken(token) : '';
+      let changes = 0;
       if (token && store.user_sessions[token]) {
         delete store.user_sessions[token];
-        saveStore();
-        return { changes: 1 };
+        changes++;
       }
-      return { changes: 0 };
+      if (hashed && store.user_sessions[hashed]) {
+        delete store.user_sessions[hashed];
+        changes++;
+      }
+      if (changes > 0) saveStore();
+      return { changes };
     }
 
     // 5. Insert or update user_states
@@ -236,7 +242,8 @@ class Statement {
     if (s.includes('from user_sessions')) {
       const [token] = params;
       if (!token) return undefined;
-      const session = store.user_sessions[token];
+      const hashed = hashSessionToken(token);
+      const session = store.user_sessions[token] || store.user_sessions[hashed];
       if (!session) return undefined;
       return {
         user_id: session.user_id,
@@ -310,12 +317,46 @@ class Statement {
   }
 }
 
+export function hashSessionToken(token: string): string {
+  return crypto.createHash('sha256').update(String(token || '')).digest('hex');
+}
+
 export const db = {
+  get data() {
+    return {
+      users: store.users,
+      sessions: store.user_sessions,
+      user_sessions: store.user_sessions,
+      user_states: store.user_states,
+      projects: store.projects,
+      cuts: store.cuts,
+    };
+  },
   exec(_sql: string) {
     // Schema creation is handled in-memory
   },
   prepare(sql: string) {
     return new Statement(sql);
+  },
+  createSession(userId: string, rawToken: string, expiresAtMs: number) {
+    const hashed = hashSessionToken(rawToken);
+    store.user_sessions[hashed] = {
+      session_token: hashed,
+      user_id: userId,
+      expires_at: new Date(expiresAtMs).toISOString(),
+      created_at: new Date().toISOString(),
+    };
+    saveStore();
+  },
+  getSessionByRawToken(rawToken: string) {
+    const hashed = hashSessionToken(rawToken);
+    return store.user_sessions[rawToken] || store.user_sessions[hashed];
+  },
+  deleteSessionByRawToken(rawToken: string) {
+    const hashed = hashSessionToken(rawToken);
+    delete store.user_sessions[rawToken];
+    delete store.user_sessions[hashed];
+    saveStore();
   },
 };
 

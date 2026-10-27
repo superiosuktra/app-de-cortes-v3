@@ -15,6 +15,10 @@ export function securityHeadersMiddleware(_req: Request, res: Response, next: Ne
     'Content-Security-Policy',
     "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; media-src 'self' blob:; connect-src 'self' https:; frame-src 'self' https://www.youtube.com;"
   );
+  // P1 — HSTS: obrigatório em produção para garantir transporte seguro por 2 anos
+  if (process.env.NODE_ENV === 'production') {
+    res.setHeader('Strict-Transport-Security', 'max-age=63072000; includeSubDomains');
+  }
   next();
 }
 
@@ -250,14 +254,168 @@ export function formatSecondsToTimestamp(totalSeconds: number): string {
 }
 
 /**
- * 6. Validates timestamp and returns normalized formatted string without fallback silent substitutions
+ * 6. Validates timestamp and returns normalized formatted string without fallback silent substitutions.
+ * Throws when invalid and no fallback is specified.
  */
-export function sanitizeTimestamp(timeStr: string | number, fallbackDefault = '00:00'): string {
+export function sanitizeTimestamp(timeStr: string | number, fallbackDefault?: string): string {
   const sec = parseTimeToSeconds(timeStr);
   if (isNaN(sec)) {
-    return fallbackDefault;
+    if (fallbackDefault !== undefined) {
+      return fallbackDefault;
+    }
+    throw new Error('Timestamp inválido.');
   }
   return formatSecondsToTimestamp(sec);
+}
+
+/**
+ * Parses seconds to MM:SS string. Throws error on invalid numbers (e.g. NaN, negative).
+ */
+export function formatSecondsToMMSS(seconds: number): string {
+  if (typeof seconds !== 'number' || isNaN(seconds) || !Number.isFinite(seconds) || seconds < 0) {
+    throw new Error('Valor de segundos inválido.');
+  }
+  const s = Math.floor(seconds);
+  const m = Math.floor(s / 60);
+  const remS = s % 60;
+  return `${m.toString().padStart(2, '0')}:${remS.toString().padStart(2, '0')}`;
+}
+
+/**
+ * Cookie Parser with safe percent-decoding (never throws URIError on malformed % sequences)
+ */
+export function parseCookies(header?: string): Record<string, string> {
+  const list: Record<string, string> = {};
+  if (!header) return list;
+  header.split(';').forEach((cookie) => {
+    const parts = cookie.split('=');
+    if (parts.length >= 2) {
+      const key = parts[0].trim();
+      const rawVal = parts.slice(1).join('=').trim();
+      try {
+        list[key] = decodeURIComponent(rawVal);
+      } catch {
+        list[key] = rawVal;
+      }
+    }
+  });
+  return list;
+}
+
+/**
+ * Validates HTTP Range headers (RFC 7233). Supports standard, open-ended, and suffix ranges.
+ */
+export function parseHttpRange(
+  rangeHeader: string | undefined,
+  fileSize: number
+): { valid: boolean; start?: number; end?: number; chunkSize?: number } {
+  if (!rangeHeader || typeof rangeHeader !== 'string' || !rangeHeader.startsWith('bytes=')) {
+    return { valid: false };
+  }
+  const raw = rangeHeader.slice(6).trim();
+  if (raw.includes(',')) return { valid: false }; // multi-range unsupported
+
+  if (raw.startsWith('-')) {
+    // Suffix range: bytes=-500 -> last 500 bytes
+    const suffixStr = raw.slice(1);
+    if (!/^\d+$/.test(suffixStr)) return { valid: false };
+    const suffixLen = parseInt(suffixStr, 10);
+    if (suffixLen <= 0 || suffixLen > fileSize) return { valid: false };
+    const start = fileSize - suffixLen;
+    const end = fileSize - 1;
+    return { valid: true, start, end, chunkSize: suffixLen };
+  }
+
+  const parts = raw.split('-');
+  if (parts.length !== 2) return { valid: false };
+  const [startStr, endStr] = parts;
+  if (!/^\d+$/.test(startStr)) return { valid: false };
+  const start = parseInt(startStr, 10);
+  if (start < 0 || start >= fileSize) return { valid: false };
+
+  if (endStr === '') {
+    // Open-ended: bytes=1500-
+    const end = fileSize - 1;
+    return { valid: true, start, end, chunkSize: end - start + 1 };
+  }
+
+  if (!/^\d+$/.test(endStr)) return { valid: false };
+  const end = parseInt(endStr, 10);
+  if (end < start || end >= fileSize) return { valid: false };
+
+  return { valid: true, start, end, chunkSize: end - start + 1 };
+}
+
+export async function assertSafeOutboundUrl(
+  urlStr: string,
+  options?: { lookupFn?: (host: string) => Promise<Array<{ address: string; family: number }>> }
+): Promise<URL> {
+  let parsed: URL;
+  try {
+    parsed = new URL(urlStr);
+  } catch {
+    throw new Error('URL inválida.');
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`Protocolo inseguro: ${parsed.protocol}. Apenas protocolos permitidos (http/https).`);
+  }
+
+  const isPrivate = (host: string) => {
+    const clean = host.toLowerCase().replace(/^[\[]|[\]]$/g, '');
+    if (
+      clean === 'localhost' ||
+      clean === '127.0.0.1' ||
+      clean === '0.0.0.0' ||
+      clean === '::1' ||
+      clean.startsWith('127.') ||
+      clean.startsWith('10.') ||
+      clean.startsWith('192.168.') ||
+      clean.startsWith('169.254.') ||
+      clean.startsWith('::ffff:') ||
+      clean.startsWith('fc00:') ||
+      clean.startsWith('fd00:') ||
+      clean.startsWith('fe80:') ||
+      clean.includes('meta-data') ||
+      clean.includes('metadata') ||
+      clean.endsWith('.internal')
+    ) {
+      return true;
+    }
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(clean)) {
+      return true;
+    }
+    return false;
+  };
+
+  const cleanHost = parsed.hostname.toLowerCase().replace(/^[\[]|[\]]$/g, '');
+  if (isPrivate(cleanHost)) {
+    throw new Error(`SSRF bloqueado: endereço de rede privada ou local (${cleanHost})`);
+  }
+
+  if (options?.lookupFn) {
+    const resolved = await options.lookupFn(parsed.hostname);
+    for (const r of resolved) {
+      if (isPrivate(r.address)) {
+        throw new Error(`SSRF bloqueado: DNS resolveu para endereço privado (${r.address})`);
+      }
+    }
+  }
+
+  return parsed;
+}
+
+/**
+ * Tracks uploaded files ownership to enforce strict multi-tenant access control
+ */
+const uploadedFileOwners = new Map<string, string>();
+
+export function registerUploadedFile(filePath: string, userId: string): void {
+  uploadedFileOwners.set(path.resolve(filePath), userId);
+}
+
+export function getUploadedFileOwner(filePath: string): string | undefined {
+  return uploadedFileOwners.get(path.resolve(filePath));
 }
 
 /**

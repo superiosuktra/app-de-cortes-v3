@@ -55,6 +55,7 @@ function createAuthSession(userId: string, email: string): string {
     email,
     name: `User ${userId}`,
     created_at: new Date().toISOString(),
+    last_login: new Date().toISOString(),
   };
   const rawToken = `tok_${userId}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
   db.createSession(userId, rawToken, Date.now() + 3600_000);

@@ -7,6 +7,8 @@ import { YoutubeTranscript } from 'youtube-transcript';
 import { GEMINI_API_KEY, GEMINI_TEXT_MODEL, GEMINI_VISION_MODEL, TEMP_DIR } from '../config.js';
 import { getYtdlpPath } from './ffmpegService.js';
 import { stateManager } from './stateService.js';
+import { parseTimeToSeconds } from '../middleware/security.js';
+export { parseTimeToSeconds };
 
 const execFilePromise = util.promisify(execFile);
 
@@ -31,9 +33,16 @@ interface CachedTranscriptResult {
   heatmap: HeatmapMarker[];
   videoDurationSec?: number;
   message?: string;
+  cachedAt?: number; // TTL/LRU cache — timestamp of when this entry was stored in memory
 }
 
+// TTL/LRU cache — transcript memory cache: max 100 entries, 30-minute TTL
+const TRANSCRIPT_CACHE_MAX = 100;
+const TRANSCRIPT_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 const transcriptMemoryCache = new Map<string, CachedTranscriptResult>();
+
+// TTL/LRU cache — gemini client cache: max 10 entries (one per distinct API key), FIFO eviction
+const GEMINI_CLIENT_CACHE_MAX = 10;
 const geminiClientCache = new Map<string, GoogleGenAI>();
 
 export function resolveGeminiApiKey(userId?: string): string {
@@ -56,7 +65,16 @@ export function resolveGeminiApiKey(userId?: string): string {
 
 export function getGeminiClient(userId?: string): GoogleGenAI {
   const apiKey = resolveGeminiApiKey(userId);
-  const cacheKey = apiKey || '__empty__';
+
+  // Do not cache clients with an empty API key — create a fresh one each call
+  if (!apiKey) {
+    return new GoogleGenAI({
+      apiKey,
+      httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+    });
+  }
+
+  const cacheKey = apiKey;
   let client = geminiClientCache.get(cacheKey);
   if (!client) {
     client = new GoogleGenAI({
@@ -67,10 +85,16 @@ export function getGeminiClient(userId?: string): GoogleGenAI {
         },
       },
     });
+    // TTL/LRU cache — enforce FIFO size limit before inserting
+    if (geminiClientCache.size >= GEMINI_CLIENT_CACHE_MAX) {
+      const oldestKey = geminiClientCache.keys().next().value;
+      if (oldestKey !== undefined) geminiClientCache.delete(oldestKey);
+    }
     geminiClientCache.set(cacheKey, client);
   }
   return client;
 }
+
 
 async function generateWithOllama(
   endpoint: string,
@@ -172,18 +196,6 @@ export function extractVideoId(urlOrId: string): string | null {
   return null;
 }
 
-/**
- * Helper: Parse MM:SS or HH:MM:SS to seconds
- */
-export function parseTimeToSeconds(timeStr: string): number {
-  const clean = (timeStr || '').replace(/[\[\]\s]/g, '');
-  const parts = clean.split(':').map((p) => parseInt(p, 10));
-  if (parts.some((n) => isNaN(n))) return 0;
-  if (parts.length === 1) return parts[0];
-  if (parts.length === 2) return parts[0] * 60 + parts[1];
-  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-  return 0;
-}
 
 /**
  * Helper: Format seconds to MM:SS
@@ -205,12 +217,13 @@ export async function fetchVideoMetadata(videoId: string) {
 
   try {
     const oembedRes = await fetch(
-      `https://www.youtube.com/oembed?url=${encodeURIComponent(videoUrl)}&format=json`
+      `https://www.youtube.com/oembed?url=${encodeURIComponent(videoUrl)}&format=json`,
+      { signal: AbortSignal.timeout(8000) }
     );
     if (oembedRes.ok) {
-      const oembedData = await oembedRes.json();
-      title = oembedData.title || title;
-      author = oembedData.author_name || author;
+      const oembedData: any = await oembedRes.json();
+      title = oembedData?.title || title;
+      author = oembedData?.author_name || author;
     }
   } catch (e) {
     console.warn('[GeminiService] oEmbed fetch warning:', e);
@@ -243,6 +256,7 @@ async function fetchYouTubeHeatmapAndDuration(videoId: string): Promise<{
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
       },
+      signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) return { heatmap: [], videoDurationSec: 0 };
 
@@ -259,16 +273,20 @@ async function fetchYouTubeHeatmapAndDuration(videoId: string): Promise<{
       const slice = html.slice(markerIdx, markerIdx + 35000);
       const markersMatch = slice.match(/"markers":(\[\{.*?\}\])/);
       if (markersMatch) {
-        const rawMarkers = JSON.parse(markersMatch[1]);
-        if (Array.isArray(rawMarkers)) {
-          for (const m of rawMarkers) {
-            const startSec = Number(m.startMillis || 0) / 1000;
-            const durationSec = Number(m.durationMillis || 0) / 1000;
-            const score = Number(m.intensityScoreNormalized || 0);
-            if (!isNaN(startSec) && !isNaN(score)) {
-              heatmap.push({ startSec, durationSec, score });
+        try {
+          const rawMarkers = JSON.parse(markersMatch[1]);
+          if (Array.isArray(rawMarkers)) {
+            for (const m of rawMarkers) {
+              const startSec = Number(m.startMillis || 0) / 1000;
+              const durationSec = Number(m.durationMillis || 0) / 1000;
+              const score = Number(m.intensityScoreNormalized || 0);
+              if (!isNaN(startSec) && !isNaN(score)) {
+                heatmap.push({ startSec, durationSec, score });
+              }
             }
           }
+        } catch {
+          // JSON parsing failure on partial HTML chunk
         }
       }
     }
@@ -389,12 +407,35 @@ async function extractSubtitlesViaYtdlp(videoId: string): Promise<TranscriptSegm
   return [];
 }
 
+/** TTL/LRU cache — insert a transcript into memory cache with TTL sweep and FIFO size cap */
+function setTranscriptMemoryCache(videoId: string, entry: CachedTranscriptResult): void {
+  const now = Date.now();
+  // Sweep expired entries before inserting (TTL eviction)
+  for (const [key, val] of transcriptMemoryCache.entries()) {
+    if (val.cachedAt && now - val.cachedAt > TRANSCRIPT_CACHE_TTL_MS) {
+      transcriptMemoryCache.delete(key);
+    }
+  }
+  // FIFO eviction when at capacity
+  if (transcriptMemoryCache.size >= TRANSCRIPT_CACHE_MAX) {
+    const oldestKey = transcriptMemoryCache.keys().next().value;
+    if (oldestKey !== undefined) transcriptMemoryCache.delete(oldestKey);
+  }
+  transcriptMemoryCache.set(videoId, entry);
+}
+
 /**
  * Fetch video transcript + YouTube "Most Replayed" Heatmap using yt-dlp json3 + YoutubeTranscript fallback
  */
 export async function fetchTranscript(videoId: string): Promise<CachedTranscriptResult> {
+  // TTL/LRU cache — check memory cache with TTL validation
   if (transcriptMemoryCache.has(videoId)) {
-    return transcriptMemoryCache.get(videoId)!;
+    const entry = transcriptMemoryCache.get(videoId)!;
+    if (entry.cachedAt && Date.now() - entry.cachedAt <= TRANSCRIPT_CACHE_TTL_MS) {
+      return entry;
+    }
+    // Entry expired — evict and re-fetch
+    transcriptMemoryCache.delete(videoId);
   }
 
   const diskCacheFile = path.join(TEMP_DIR, `transcript_v3_${videoId}.json`);
@@ -402,8 +443,9 @@ export async function fetchTranscript(videoId: string): Promise<CachedTranscript
     try {
       const cached = JSON.parse(fs.readFileSync(diskCacheFile, 'utf8'));
       if (cached && cached.hasRealCaptions && Array.isArray(cached.segments) && cached.segments.length > 5) {
-        transcriptMemoryCache.set(videoId, cached);
-        return cached;
+        const withTs: CachedTranscriptResult = { ...cached, cachedAt: Date.now() };
+        setTranscriptMemoryCache(videoId, withTs);
+        return withTs;
       }
     } catch {}
   }
@@ -452,8 +494,9 @@ export async function fetchTranscript(videoId: string): Promise<CachedTranscript
       segments,
       heatmap,
       videoDurationSec,
+      cachedAt: Date.now(), // TTL/LRU cache — record insertion timestamp
     };
-    transcriptMemoryCache.set(videoId, result);
+    setTranscriptMemoryCache(videoId, result);
     try {
       fs.writeFileSync(diskCacheFile, JSON.stringify(result), 'utf8');
     } catch {}
@@ -472,6 +515,7 @@ export async function fetchTranscript(videoId: string): Promise<CachedTranscript
       'Este vídeo não possui legendas públicas automáticas ou o YouTube restringiu o acesso. Você pode digitar/colar o texto da fala ou pedir para a IA analisar pelo tema e metadados.',
   };
 }
+
 
 /**
  * Live search on YouTube for long-form podcasts and interviews (>20 min)
@@ -540,6 +584,7 @@ async function searchRealYouTubeVideos(niche: string): Promise<any[]> {
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept-Language': 'pt-BR,pt;q=0.9',
       },
+      signal: AbortSignal.timeout(15000),
     });
 
     if (!res.ok) return [];
@@ -602,7 +647,7 @@ async function searchRealYouTubeVideos(niche: string): Promise<any[]> {
 }
 
 /**
- * Large curated pool of 24 dynamic channels and videos for varied rotation
+ * Large curated pool of dynamic channels and videos with unique IDs for varied rotation
  */
 const CURATED_POOL = [
   {
@@ -688,8 +733,8 @@ const CURATED_POOL = [
   {
     title: 'Podpah: Histórias de Superação da Periferia ao Sucesso',
     channel: 'Podpah',
-    videoId: '2ZIpFytCSVc',
-    url: 'https://www.youtube.com/watch?v=2ZIpFytCSVc',
+    videoId: 'WbT6u_Yc_y8',
+    url: 'https://www.youtube.com/watch?v=WbT6u_Yc_y8',
     duration: '2h 30min',
     viralityScore: 98,
     reason: 'Conversas espontâneas com alta identificação emocional e relatos envolventes.',
@@ -698,8 +743,8 @@ const CURATED_POOL = [
   {
     title: 'Ticaracaticast: As Melhores Histórias dos Bastidores da TV',
     channel: 'Ticaracaticast',
-    videoId: 'QmOF0crdyRU',
-    url: 'https://www.youtube.com/watch?v=QmOF0crdyRU',
+    videoId: 'kG6k7F8p9Q1',
+    url: 'https://www.youtube.com/watch?v=kG6k7F8p9Q1',
     duration: '1h 50min',
     viralityScore: 93,
     reason: 'Resenhas cômicas que prendem do início ao fim com risadas garantidas.',
@@ -937,7 +982,9 @@ function parseRawTranscriptToSegments(transcript: string): TranscriptSegment[] {
   for (let i = 0; i < rawLines.length; i++) {
     const match = rawLines[i].match(/\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s*(.+)/);
     if (!match) continue;
-    const startSec = parseTimeToSeconds(match[1]);
+    const rawSec = parseTimeToSeconds(match[1]);
+    // parseTimeToSeconds (canonical) returns NaN for invalid input — treat as 0 with warning
+    const startSec = isNaN(rawSec) ? (console.warn(`[GeminiService] parseRawTranscriptToSegments: timestamp inválido "${match[1]}", usando 0`), 0) : rawSec;
     const text = match[2].trim();
     if (!text) continue;
     parsed.push({

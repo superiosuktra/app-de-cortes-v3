@@ -4,14 +4,30 @@ import { execFile } from 'child_process';
 import util from 'util';
 import crypto from 'crypto';
 import { TEMP_DIR, BIN_DIR, getSystemFont } from '../config.js';
-import { parseTimeToSeconds } from './geminiService.js';
 import {
   normalizeSafeYouTubeUrl,
   validateCutInterval,
   sanitizeTimestamp,
+  parseTimeToSeconds,
 } from '../middleware/security.js';
+import { stateManager } from './stateService.js';
 
 const execFilePromise = util.promisify(execFile);
+
+export function isYtDlpBotChallenge(msg: string): boolean {
+  const raw = String(msg || '');
+  return (
+    raw.includes('Sign in to confirm you’re not a bot') ||
+    raw.includes("Sign in to confirm you're not a bot") ||
+    raw.includes('Sign in to confirm you are not a bot')
+  );
+}
+
+export function resolveUserYouTubeCookies(userId?: string): string | undefined {
+  if (!userId) return process.env.YOUTUBE_COOKIES;
+  const userCreds = stateManager.getCredentials(userId);
+  return userCreds?.youtube?.cookies || process.env.YOUTUBE_COOKIES;
+}
 
 /**
  * Get executable path for FFmpeg (preferring system ffmpeg binary)
@@ -163,18 +179,25 @@ export async function downloadYouTubeSlice({
   videoUrl,
   startTime,
   endTime,
+  userId,
 }: {
   videoUrl: string;
   startTime: string;
   endTime: string;
+  userId?: string;
 }): Promise<string> {
   const safeYt = normalizeSafeYouTubeUrl(videoUrl);
   if (!safeYt) {
     throw new Error('URL do YouTube inválida ou bloqueada.');
   }
 
-  const cleanStart = sanitizeTimestamp(startTime, '00:00');
-  const cleanEnd = sanitizeTimestamp(endTime, '00:30');
+  const cleanStart = sanitizeTimestamp(startTime);
+  const cleanEnd = sanitizeTimestamp(endTime);
+  const startSec = parseTimeToSeconds(cleanStart);
+  const endSec = parseTimeToSeconds(cleanEnd);
+  if (startSec >= endSec) {
+    throw new Error('O tempo final deve ser maior que o tempo inicial.');
+  }
   const intervalCheck = validateCutInterval(cleanStart, cleanEnd, 300);
   if (!intervalCheck.valid) {
     throw new Error(intervalCheck.error || 'Intervalo de tempo inválido.');
@@ -189,12 +212,13 @@ export async function downloadYouTubeSlice({
 
   console.log(`[YouTube Downloader] Baixando trecho em alta definição 1080p (${cleanStart} -> ${cleanEnd}) de ${safeYt.canonicalUrl}`);
 
-  // Create per-request isolated temporary cookie file if environment cookies exist
+  // Create per-request isolated temporary cookie file if environment or user cookies exist
   let tempCookieFile: string | null = null;
-  if (process.env.YOUTUBE_COOKIES) {
+  const userCookies = resolveUserYouTubeCookies(userId);
+  if (userCookies) {
     try {
-      tempCookieFile = path.join(TEMP_DIR, `cookie_${randomSuffix}.txt`);
-      fs.writeFileSync(tempCookieFile, process.env.YOUTUBE_COOKIES, 'utf-8');
+      tempCookieFile = path.join(TEMP_DIR, `cookies_${randomSuffix}.txt`);
+      fs.writeFileSync(tempCookieFile, userCookies, { encoding: 'utf-8', mode: 0o600 });
     } catch {}
   }
 
@@ -554,13 +578,22 @@ export async function renderRealCutVideo({
     outPath,
   ];
 
-  await execFilePromise(ffmpegCmd, ffmpegArgs, { timeout: 150000 });
+  try {
+    await execFilePromise(ffmpegCmd, ffmpegArgs, { timeout: 150000 });
 
-  if (!fs.existsSync(outPath) || fs.statSync(outPath).size === 0) {
-    throw new Error('O arquivo de vídeo renderizado não foi gerado pelo FFmpeg.');
+    if (!fs.existsSync(outPath) || fs.statSync(outPath).size === 0) {
+      throw new Error('O arquivo de vídeo renderizado não foi gerado pelo FFmpeg.');
+    }
+
+    return outPath;
+  } catch (err) {
+    if (fs.existsSync(outPath)) {
+      try {
+        fs.unlinkSync(outPath);
+      } catch {}
+    }
+    throw err;
   }
-
-  return outPath;
 }
 
 /**

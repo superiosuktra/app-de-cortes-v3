@@ -114,3 +114,5 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
     code: 'UNAUTHORIZED',
   });
 }
+
+export const resolveSessionMiddleware = authMiddleware;

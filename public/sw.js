@@ -1,5 +1,7 @@
 // Self-unregistering Service Worker
-// Automatically terminates and cleans up any old service workers
+// Este SW existe para garantir que qualquer Service Worker legado seja
+// removido automaticamente. Após todos os usuários terem atualizado,
+// este arquivo pode ser removido junto com as referências ao manifest.
 self.addEventListener('install', () => {
   self.skipWaiting();
 });

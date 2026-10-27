@@ -3,8 +3,18 @@ import crypto from 'crypto';
 import db from '../db.js';
 import { stateManager } from '../services/stateService.js';
 import { exchangeYouTubeAuthCode } from '../services/youtubeService.js';
+import { createRateLimiter } from '../middleware/security.js';
 
 export const authRouter = Router();
+
+// P1 — Rate limiter agressivo para demo-login: 5 req/min por IP para evitar geração em massa de sessões
+const demoLoginRateLimiter = createRateLimiter({
+  windowMs: 60 * 1000,
+  maxRequests: 5,
+  scope: 'demo-login',
+  message: 'Muitas tentativas de login demo. Aguarde 1 minuto antes de tentar novamente.',
+});
+
 
 function escapeHtml(str: string): string {
   return String(str || '')

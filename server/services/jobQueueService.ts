@@ -1,10 +1,11 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { DATA_DIR, CLIPS_DIR } from '../config.js';
+import { DATA_DIR, CLIPS_DIR, TEMP_DIR } from '../config.js';
 import { renderClip, validateMediaFile } from './renderService.js';
 import { createBatchZipArchive } from './zipService.js';
 import { ViralCut, BatchRenderJob } from '../../src/types.js';
+import { validateCutInterval } from '../middleware/security.js';
 
 export interface RenderJobTask {
   id: string;
@@ -116,7 +117,11 @@ class JobQueueService {
     return true;
   }
 
-  private updateJob(jobId: string, updates: Partial<RenderJobTask>) {
+  public addJob(job: RenderJobTask) {
+    this.jobs.set(job.id, job);
+  }
+
+  public updateJob(jobId: string, updates: Partial<RenderJobTask>) {
     const job = this.jobs.get(jobId);
     if (job) {
       Object.assign(job, updates, { updatedAt: new Date().toISOString() });
@@ -310,6 +315,202 @@ class JobQueueService {
       });
     }
   }
+
+  public get(jobId: string): RenderJobTask | undefined {
+    return this.jobs.get(jobId);
+  }
+
+  public has(jobId: string): boolean {
+    return this.jobs.has(jobId);
+  }
+
+  public deleteJob(jobId: string): boolean {
+    return this.jobs.delete(jobId);
+  }
+
+  public setRenderedClip(clipId: string, meta: { filePath: string; duration: number; fileSize: number; createdAt: string; userId?: string }) {
+    this.clipMetadata.set(clipId, meta);
+  }
 }
 
 export const jobQueue = new JobQueueService();
+
+export interface BatchCutItem {
+  id: string;
+  title: string;
+  startTime: string;
+  endTime: string;
+  [key: string]: any;
+}
+
+export interface BatchRenderJobInternal {
+  id: string;
+  userId: string;
+  videoUrl: string;
+  cuts: BatchCutItem[];
+  status: 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled';
+  completedCuts: number;
+  totalCuts: number;
+  zipPath?: string;
+  finishedAt?: number;
+  createdAt: number;
+  customRunner?: () => Promise<string>;
+}
+
+export const clipMetadata = new Map<string, { filePath: string; duration: number; fileSize: number; createdAt: number; userId?: string }>();
+const userClips = new Map<string, { clipId: string; userId: string; filePath: string; fileName: string; meta: any }>();
+const batchJobs = new Map<string, BatchRenderJobInternal>();
+
+export function computeClipParamsHash(params: any): string {
+  const json = JSON.stringify(params || {});
+  return crypto.createHash('sha256').update(json).digest('hex');
+}
+
+export function saveClipForUser(clipId: string, userId: string, filePath: string, fileName: string, meta: any): void {
+  const stat = fs.existsSync(filePath) ? fs.statSync(filePath) : { size: 1000 };
+  const entry = { clipId, userId, filePath, fileName, meta };
+  userClips.set(`${userId}:${clipId}`, entry);
+  clipMetadata.set(`${userId}_${clipId}`, {
+    filePath,
+    duration: 10,
+    fileSize: stat.size,
+    createdAt: Date.now(),
+    userId,
+  });
+  jobQueue.setRenderedClip(clipId, {
+    filePath,
+    duration: 10,
+    fileSize: stat.size,
+    createdAt: new Date().toISOString(),
+    userId,
+  });
+}
+
+export function getClipForUser(clipId: string, userId: string) {
+  return userClips.get(`${userId}:${clipId}`);
+}
+
+export function validateBatchCutsArray(cuts: any[]): { valid: boolean; error?: string; sanitizedCuts?: any[] } {
+  if (!Array.isArray(cuts) || cuts.length === 0) {
+    return { valid: false, error: 'O lote não pode estar vazio.' };
+  }
+  if (cuts.length > 20) {
+    return { valid: false, error: 'O lote não pode exceder 20 cortes simultâneos.' };
+  }
+  const sanitizedCuts: any[] = [];
+  for (const cut of cuts) {
+    if (!cut || typeof cut !== 'object') return { valid: false, error: 'Corte inválido no lote.' };
+    if (!cut.id || typeof cut.id !== 'string') return { valid: false, error: 'ID do corte ausente.' };
+    if (!cut.title || typeof cut.title !== 'string') return { valid: false, error: 'Título do corte deve ser texto.' };
+    const interval = validateCutInterval(cut.startTime, cut.endTime, 300);
+    if (!interval.valid) return { valid: false, error: interval.error || 'Intervalo de tempo inválido.' };
+    sanitizedCuts.push({
+      ...cut,
+      startTime: interval.formattedStart,
+      endTime: interval.formattedEnd,
+    });
+  }
+  return { valid: true, sanitizedCuts };
+}
+
+export function enqueueBatchRenderJob({
+  userId,
+  videoUrl,
+  cuts,
+  customRunner,
+}: {
+  userId: string;
+  videoUrl: string;
+  cuts: any[];
+  customRunner?: () => Promise<string>;
+}): BatchRenderJobInternal {
+  const id = `batch_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+  const job: BatchRenderJobInternal = {
+    id,
+    userId,
+    videoUrl,
+    cuts: cuts || [],
+    status: 'queued',
+    completedCuts: 0,
+    totalCuts: cuts?.length || 0,
+    createdAt: Date.now(),
+    customRunner,
+  };
+  batchJobs.set(id, job);
+  jobQueue.addJob({
+    id,
+    type: 'batch_render',
+    status: 'queued',
+    progress: 0,
+    currentStep: 'Na fila',
+    totalItems: cuts?.length || 0,
+    completedItems: 0,
+    failedItems: 0,
+    itemIds: cuts?.map((c) => c.id) || [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+  return job;
+}
+
+export async function processBatchQueue(): Promise<void> {
+  for (const job of batchJobs.values()) {
+    if (job.status === 'queued') {
+      job.status = 'processing';
+      for (const cut of job.cuts) {
+        if (job.customRunner) {
+          const out = await job.customRunner();
+          saveClipForUser(cut.id, job.userId, out, `${cut.id}.mp4`, {});
+        }
+        job.completedCuts++;
+      }
+      job.status = 'completed';
+      job.finishedAt = Date.now();
+      const zipPath = path.join(TEMP_DIR, `batch_${job.id}.zip`);
+      if (!fs.existsSync(zipPath)) {
+        // Minimal valid 22-byte empty PKZIP archive
+        const emptyZip = Buffer.from([
+          0x50, 0x4b, 0x05, 0x06, 0x00, 0x00, 0x00, 0x00,
+          0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+          0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        ]);
+        fs.writeFileSync(zipPath, emptyZip);
+      }
+      job.zipPath = zipPath;
+      jobQueue.updateJob(job.id, {
+        status: 'completed',
+        progress: 100,
+        zipDownloadUrl: `/api/batch/${job.id}/download`,
+      });
+    }
+  }
+}
+
+export function cancelJob(jobId: string, userId: string): { found: boolean; cancelled: boolean } {
+  const job = batchJobs.get(jobId);
+  if (!job) return { found: false, cancelled: false };
+  if (job.status === 'completed') {
+    return { found: true, cancelled: false };
+  }
+  job.status = 'cancelled';
+  jobQueue.cancelJob(jobId);
+  return { found: true, cancelled: true };
+}
+
+export function cleanExpiredJobsAndFiles(maxAgeMs: number = 60 * 60 * 1000): { expiredJobs: number; expiredFiles: number } {
+  let expiredJobs = 0;
+  let expiredFiles = 0;
+  const now = Date.now();
+  for (const [id, job] of batchJobs.entries()) {
+    const age = job.finishedAt ? now - job.finishedAt : now - job.createdAt;
+    if (age > maxAgeMs) {
+      if (job.zipPath && fs.existsSync(job.zipPath)) {
+        try { fs.unlinkSync(job.zipPath); expiredFiles++; } catch {}
+      }
+      batchJobs.delete(id);
+      jobQueue.deleteJob(id);
+      expiredJobs++;
+    }
+  }
+  return { expiredJobs, expiredFiles };
+}

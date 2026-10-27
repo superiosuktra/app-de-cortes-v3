@@ -18,6 +18,8 @@ function maskSecret(val?: string, visibleChars: number = 4): string {
   return `${clean.slice(0, visibleChars)}••••••••`;
 }
 
+export const maskCredentialsForClient = (creds: PersistedCredentials) => buildSafeCredentials(creds);
+
 export function buildSafeCredentials(creds: PersistedCredentials) {
   const yt = creds.youtube || ({} as any);
   const ig = creds.instagram || ({} as any);
@@ -36,9 +38,10 @@ export function buildSafeCredentials(creds: PersistedCredentials) {
       customUrl: yt.customUrl || '',
       avatar: yt.avatar || '',
       verifiedAt: yt.verifiedAt || '',
-      clientId: yt.clientId ? maskSecret(yt.clientId, 8) : '',
+      clientId: yt.clientId || '',
       clientSecret: yt.clientSecret ? '••••••••' : '',
-      accessToken: maskSecret(yt.accessToken, 8),
+      accessToken: yt.accessToken ? '••••••••' : '',
+      refreshToken: yt.refreshToken ? '••••••••' : '',
       hasRefreshToken: Boolean(yt.refreshToken),
       hasCookies: Boolean(yt.cookies),
     },
