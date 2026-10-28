@@ -87,10 +87,7 @@ authRouter.post('/auth/demo-login', (req: Request, res: Response) => {
 
     // Create session token
     const sessionToken = `demo_tok_${crypto.randomUUID()}`;
-    db.prepare(`
-      INSERT INTO user_sessions (session_token, user_id, expires_at)
-      VALUES (?, ?, datetime('now', '+30 days'))
-    `).run(sessionToken, demoId);
+    db.createSession(demoId, sessionToken, Date.now() + 30 * 24 * 3600 * 1000);
 
     const userObj = {
       id: demoId,
@@ -197,7 +194,7 @@ authRouter.get('/auth/google/callback', async (req: Request, res: Response) => {
 
   // Validate state to prevent CSRF attacks
   const cookies = parseCookies(req.headers.cookie);
-  const expectedState = cookies['google_oauth_state'];
+  const expectedState = cookies['google_oauth_state'] || cookies['oauth_state'];
   if (!queryState || !expectedState || queryState !== expectedState) {
     return res.status(403).send(`
       <!DOCTYPE html>
@@ -215,6 +212,7 @@ authRouter.get('/auth/google/callback', async (req: Request, res: Response) => {
 
   // Clear state cookie
   res.clearCookie('google_oauth_state', { path: '/' });
+  res.clearCookie('oauth_state', { path: '/' });
 
   if (!code) {
     return res.status(400).send(`
@@ -242,9 +240,14 @@ authRouter.get('/auth/google/callback', async (req: Request, res: Response) => {
     }
 
     // Fetch user profile from Google UserInfo
-    const userRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+    let userRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
       headers: { Authorization: `Bearer ${exchange.accessToken}` },
     });
+    if (!userRes.ok) {
+      userRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+        headers: { Authorization: `Bearer ${exchange.accessToken}` },
+      });
+    }
 
     if (!userRes.ok) {
       throw new Error(`Falha ao obter perfil do usuário no Google (${userRes.status}).`);
@@ -254,6 +257,22 @@ authRouter.get('/auth/google/callback', async (req: Request, res: Response) => {
     const verifiedEmail = googleUser.email ? String(googleUser.email).trim().toLowerCase() : '';
     if (!verifiedEmail || !verifiedEmail.includes('@')) {
       throw new Error('E-mail verificado não foi retornado pelo Google.');
+    }
+
+    const isEmailVerified = googleUser.email_verified === true || googleUser.verified_email === true;
+    if (!isEmailVerified) {
+      return res.status(403).send(`
+        <!DOCTYPE html>
+        <html lang="pt-BR">
+          <body style="background:#0f101a;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
+            <div style="text-align:center;max-width:400px;padding:24px;background:#161827;border-radius:16px;border:1px solid #ef4444;">
+              <h3 style="color:#f87171;">E-mail não verificado</h3>
+              <p style="font-size:13px;color:#a1a1aa;">Sua conta do Google não possui um endereço de e-mail verificado. O acesso foi recusado.</p>
+              <button onclick="window.close()" style="margin-top:12px;padding:8px 16px;background:#ef4444;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:bold;">Fechar Janela</button>
+            </div>
+          </body>
+        </html>
+      `);
     }
 
     const name = googleUser.name || verifiedEmail.split('@')[0];
@@ -288,12 +307,9 @@ authRouter.get('/auth/google/callback', async (req: Request, res: Response) => {
       userId
     );
 
-    // Create session token
+    // Create session token (hashed at rest in user_sessions)
     const sessionToken = crypto.randomBytes(32).toString('hex');
-    db.prepare(`
-      INSERT INTO user_sessions (session_token, user_id, expires_at)
-      VALUES (?, ?, datetime('now', '+30 days'))
-    `).run(sessionToken, userId);
+    db.createSession(userId, sessionToken, Date.now() + 30 * 24 * 3600 * 1000);
 
     const userPayload = {
       id: userId,

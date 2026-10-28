@@ -1,6 +1,7 @@
 import express, { Request, Response, NextFunction } from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
+import crypto from 'crypto';
 import { ensureDirectories, PORT } from './server/config.js';
 import { resolveSessionMiddleware } from './server/middleware/auth.js';
 import {
@@ -14,7 +15,7 @@ import { cutRouter } from './server/routes/cutRoutes.js';
 import { socialRouter } from './server/routes/socialRoutes.js';
 import { stateRouter } from './server/routes/stateRoutes.js';
 import './server/queue/videoWorker.js';
-import './server/services/jobQueueService.js';
+import { cleanExpiredJobsAndFiles } from './server/services/jobQueueService.js';
 
 
 const isProd = process.env.NODE_ENV === 'production';
@@ -41,19 +42,26 @@ ensureDirectories();
 export function createApp() {
   const app = express();
 
-  // 1. Parse JSON body (global, antes de qualquer middleware que leia req.body)
+  // 1. Correlation ID for distributed tracing and structured logs
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    const correlationId = (req.headers['x-request-id'] as string) || crypto.randomUUID();
+    res.setHeader('X-Request-Id', correlationId);
+    next();
+  });
+
+  // 2. Parse JSON body (global, antes de qualquer middleware que leia req.body)
   app.use(express.json({ limit: '15mb' }));
 
-  // 2. P0 — Security Headers: X-Powered-By removal, CSP, HSTS (prod), etc.
+  // 3. P0 — Security Headers: X-Powered-By removal, CSP, HSTS (prod), etc.
   app.use(securityHeadersMiddleware);
 
-  // 3. P0 — Sanitize body/query: prototype-pollution guard, null-byte strip, overflow check
+  // 4. P0 — Sanitize body/query: prototype-pollution guard, null-byte strip, overflow check
   app.use(sanitizeRequestMiddleware);
 
-  // 4. P1 — Trust proxy: necessário para que req.ip reflita o IP real atrás de Nginx/Caddy/Cloud Run
+  // 5. P1 — Trust proxy: necessário para que req.ip reflita o IP real atrás de Nginx/Caddy/Cloud Run
   app.set('trust proxy', 1);
 
-  // 5. P1 — Rate limiter global para /api: 120 req/min por IP (proteção mínima de burst)
+  // 6. P1 — Rate limiter global para /api: 120 req/min por IP (proteção mínima de burst)
   const globalApiRateLimiter = createRateLimiter({
     windowMs: 60 * 1000,
     maxRequests: 120,
@@ -62,19 +70,44 @@ export function createApp() {
   });
   app.use('/api', globalApiRateLimiter);
 
-  // 6. Resolve User Session for multi-tenant isolation
+  // 7. Resolve User Session for multi-tenant isolation
   app.use('/api', resolveSessionMiddleware);
 
-  // 7. Mount Modular API Routers
+  // 8. Mount Modular API Routers
   app.use('/api', authRouter);
   app.use('/api', videoRouter);
   app.use('/api', cutRouter);
   app.use('/api', socialRouter);
   app.use('/api', stateRouter);
 
-  // Health check endpoint — registered before the error handler
+  // Health check endpoint (Liveness probe)
   app.get('/health', (_req: Request, res: Response) => {
     res.json({ status: 'ok', uptime: process.uptime(), timestamp: new Date().toISOString() });
+  });
+
+  // Readiness probe endpoint (checks persistence and workspace directories)
+  app.get('/ready', (_req: Request, res: Response) => {
+    try {
+      ensureDirectories();
+      res.json({
+        status: 'ready',
+        database: 'connected',
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err: any) {
+      res.status(503).json({
+        status: 'unready',
+        error: err?.message || 'Diretórios ou banco indisponíveis.',
+      });
+    }
+  });
+
+  // Explicit API 404 handler — guarantees /api calls never fall back to index.html SPA
+  app.all('/api/*', (req: Request, res: Response) => {
+    res.status(404).json({
+      error: `Endpoint da API não encontrado: ${req.method} ${req.originalUrl}`,
+      code: 'NOT_FOUND',
+    });
   });
 
   return app;
@@ -127,6 +160,19 @@ async function startServer() {
 
   process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
   process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+  // Periodic cleanup of temporary batch jobs and expired files (every 30 minutes)
+  const cleanupTimer = setInterval(() => {
+    try {
+      const stats = cleanExpiredJobsAndFiles(60 * 60 * 1000);
+      if (stats.expiredJobs > 0 || stats.expiredFiles > 0) {
+        console.log(`[Cleanup] Limpeza periódica: ${stats.expiredJobs} tarefas e ${stats.expiredFiles} arquivos temporários expirados removidos.`);
+      }
+    } catch (e) {
+      console.warn('[Cleanup] Erro na limpeza periódica:', e);
+    }
+  }, 30 * 60 * 1000);
+  cleanupTimer.unref();
 }
 
 if (process.env.NODE_ENV !== 'test') {

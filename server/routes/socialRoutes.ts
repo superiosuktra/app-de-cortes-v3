@@ -62,10 +62,9 @@ socialRouter.post('/post-social', async (req: Request, res: Response) => {
       }
     }
     if (startTime && endTime) {
-      try {
-        validateCutInterval(startTime, endTime);
-      } catch (err: any) {
-        return res.status(400).json({ error: err.message || 'Intervalo de tempo inválido.' });
+      const interval = validateCutInterval(startTime, endTime, 300);
+      if (!interval.valid) {
+        return res.status(400).json({ error: interval.error || 'Intervalo de tempo inválido.' });
       }
     }
 
@@ -283,10 +282,9 @@ socialRouter.post('/post-youtube', async (req: Request, res: Response) => {
       }
     }
     if (startTime && endTime) {
-      try {
-        validateCutInterval(startTime, endTime);
-      } catch (err: any) {
-        return res.status(400).json({ error: err.message || 'Intervalo de tempo inválido.' });
+      const interval = validateCutInterval(startTime, endTime, 300);
+      if (!interval.valid) {
+        return res.status(400).json({ error: interval.error || 'Intervalo de tempo inválido.' });
       }
     }
 

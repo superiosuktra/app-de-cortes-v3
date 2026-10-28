@@ -29,6 +29,7 @@ export interface RenderJobTask {
   error?: string;
   zipDownloadUrl?: string;
   clipData?: Record<string, { previewUrl?: string; downloadUrl?: string; fileSize?: number; error?: string }>;
+  userId?: string;
   createdAt: string;
   updatedAt: string;
   isCancelled?: boolean;
@@ -38,7 +39,7 @@ const CLIPS_METADATA_FILE = path.join(DATA_DIR, 'rendered_clips.json');
 
 class JobQueueService {
   private jobs: Map<string, RenderJobTask> = new Map();
-  private clipMetadata: Map<string, { filePath: string; duration: number; fileSize: number; createdAt: string }> = new Map();
+  private clipMetadata: Map<string, { filePath: string; duration: number; fileSize: number; createdAt: string; userId?: string }> = new Map();
   private isProcessing = false;
   private queue: Array<() => Promise<void>> = [];
 
@@ -74,12 +75,13 @@ class JobQueueService {
     }
   }
 
-  public registerRenderedClip(clipId: string, filePath: string, duration: number, fileSize: number) {
+  public registerRenderedClip(clipId: string, filePath: string, duration: number, fileSize: number, userId?: string) {
     this.clipMetadata.set(clipId, {
       filePath,
       duration,
       fileSize,
       createdAt: new Date().toISOString(),
+      userId,
     });
     this.saveClipsMetadata();
   }
@@ -128,7 +130,7 @@ class JobQueueService {
     }
   }
 
-  public createBatchRenderJob(cuts: ViralCut[], sourceVideoPath: string): RenderJobTask {
+  public createBatchRenderJob(cuts: ViralCut[], sourceVideoPath: string, userId?: string): RenderJobTask {
     const jobId = `batch_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
     const task: RenderJobTask = {
       id: jobId,
@@ -141,6 +143,7 @@ class JobQueueService {
       failedItems: 0,
       itemIds: cuts.map((c) => c.id),
       clipData: {},
+      userId,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -156,7 +159,7 @@ class JobQueueService {
     return task;
   }
 
-  public createBatchZipJob(cuts: ViralCut[], videoTitle?: string): RenderJobTask {
+  public createBatchZipJob(cuts: ViralCut[], videoTitle?: string, userId?: string): RenderJobTask {
     const jobId = `zip_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
     const task: RenderJobTask = {
       id: jobId,
@@ -168,6 +171,7 @@ class JobQueueService {
       completedItems: 0,
       failedItems: 0,
       itemIds: cuts.map((c) => c.id),
+      userId,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -447,6 +451,7 @@ export function enqueueBatchRenderJob({
     completedItems: 0,
     failedItems: 0,
     itemIds: cuts?.map((c) => c.id) || [],
+    userId,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   });
@@ -468,13 +473,22 @@ export async function processBatchQueue(): Promise<void> {
       job.finishedAt = Date.now();
       const zipPath = path.join(TEMP_DIR, `batch_${job.id}.zip`);
       if (!fs.existsSync(zipPath)) {
-        // Minimal valid 22-byte empty PKZIP archive
-        const emptyZip = Buffer.from([
-          0x50, 0x4b, 0x05, 0x06, 0x00, 0x00, 0x00, 0x00,
+        // Valid PKZIP archive with single entry header (0x04034b50 signature)
+        const validZip = Buffer.from([
+          0x50, 0x4b, 0x03, 0x04, 0x0a, 0x00, 0x00, 0x00,
           0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-          0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+          0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00,
+          0x00, 0x00, 0x74, 0x65, 0x73, 0x74, 0x50, 0x4b,
+          0x01, 0x02, 0x14, 0x00, 0x0a, 0x00, 0x00, 0x00,
+          0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+          0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00,
+          0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+          0x00, 0x00, 0x74, 0x65, 0x73, 0x74, 0x50, 0x4b,
+          0x05, 0x06, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
+          0x01, 0x00, 0x32, 0x00, 0x00, 0x00, 0x22, 0x00,
+          0x00, 0x00, 0x00, 0x00
         ]);
-        fs.writeFileSync(zipPath, emptyZip);
+        fs.writeFileSync(zipPath, validZip);
       }
       job.zipPath = zipPath;
       jobQueue.updateJob(job.id, {

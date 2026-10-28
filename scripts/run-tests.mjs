@@ -1,6 +1,8 @@
 // scripts/run-tests.mjs
 // Portable replacement for: tsx --test $(find server -name '*.test.ts')
 // Works on Windows, Linux and macOS without shell globbing.
+process.env.NODE_ENV = 'test';
+
 import { run } from 'node:test';
 import { spec } from 'node:test/reporters';
 import { readdirSync, statSync } from 'fs';
@@ -45,3 +47,4 @@ stream.on('test:fail', () => {
   process.exitCode = 1;
 });
 await pipeline(stream.compose(spec), process.stdout);
+process.exit(process.exitCode || 0);

@@ -169,8 +169,9 @@ class Statement {
     if (s.includes('into user_sessions')) {
       const [session_token, user_id, expires_at] = params;
       if (session_token && user_id) {
-        store.user_sessions[session_token] = {
-          session_token,
+        const hashed = hashSessionToken(session_token);
+        store.user_sessions[hashed] = {
+          session_token: hashed,
           user_id,
           expires_at: expires_at || new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
           created_at: now,

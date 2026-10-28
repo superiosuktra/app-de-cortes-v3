@@ -411,11 +411,11 @@ export async function assertSafeOutboundUrl(
 const uploadedFileOwners = new Map<string, string>();
 
 export function registerUploadedFile(filePath: string, userId: string): void {
-  uploadedFileOwners.set(path.resolve(filePath), userId);
+  uploadedFileOwners.set(path.resolve(filePath).toLowerCase(), userId);
 }
 
 export function getUploadedFileOwner(filePath: string): string | undefined {
-  return uploadedFileOwners.get(path.resolve(filePath));
+  return uploadedFileOwners.get(path.resolve(filePath).toLowerCase());
 }
 
 /**
@@ -455,7 +455,7 @@ export function validateCutInterval(
     return { valid: false, error: 'O corte deve ter no mínimo 3 segundos de duração.' };
   }
   if (duration > maxDuration) {
-    return { valid: false, error: `A duração do corte não pode exceder ${maxDuration} segundos.` };
+    return { valid: false, error: `A duração do corte não pode exceder ${maxDuration}s (${maxDuration} segundos).` };
   }
 
   return {

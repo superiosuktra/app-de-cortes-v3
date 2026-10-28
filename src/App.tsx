@@ -34,39 +34,39 @@ const DEFAULT_AUTO_POST_SETTINGS: AutoPostSettings = {
 
 const INITIAL_CREDENTIALS: PlatformCredentials = {
   youtube: {
-    accessToken: 'google-oauth-bypass-active',
-    clientId: 'auto-recognized',
-    clientSecret: 'auto-recognized',
-    status: 'connected',
-    channelTitle: 'Canal Oficial (Conectado)',
-    customUrl: '@meucanal.shorts',
-    avatar: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=100&auto=format&fit=crop&q=60',
-    verifiedAt: 'Hoje',
+    accessToken: '',
+    clientId: '',
+    clientSecret: '',
+    status: 'disconnected',
+    channelTitle: '',
+    customUrl: '',
+    avatar: '',
+    verifiedAt: '',
   },
   instagram: {
-    accessToken: 'instagram-bypass-active',
-    businessAccountId: 'auto-recognized',
-    appId: 'auto-recognized',
-    appSecret: 'auto-recognized',
-    status: 'connected',
-    accountName: '@cortes.reels',
-    verifiedAt: 'Hoje',
+    accessToken: '',
+    businessAccountId: '',
+    appId: '',
+    appSecret: '',
+    status: 'disconnected',
+    accountName: '',
+    verifiedAt: '',
   },
   tiktok: {
-    accessToken: 'tiktok-bypass-active',
-    clientKey: 'auto-recognized',
-    clientSecret: 'auto-recognized',
-    status: 'connected',
-    displayName: 'TikTok Cortes Pro',
-    verifiedAt: 'Hoje',
+    accessToken: '',
+    clientKey: '',
+    clientSecret: '',
+    status: 'disconnected',
+    displayName: '',
+    verifiedAt: '',
   },
   kwai: {
-    accessToken: 'kwai-bypass-active',
-    appId: 'auto-recognized',
-    appSecret: 'auto-recognized',
-    status: 'connected',
-    accountName: '@kwai_cortes_oficial',
-    verifiedAt: 'Hoje',
+    accessToken: '',
+    appId: '',
+    appSecret: '',
+    status: 'disconnected',
+    accountName: '',
+    verifiedAt: '',
   },
   aiConfig: {
     provider: 'gemini',
@@ -1378,14 +1378,29 @@ export default function App() {
   };
 
   const handleLoadSavedCut = (saved: SavedCut) => {
+    const parseTime = (timeStr: string): number => {
+      const clean = (timeStr || '').replace(/[\[\]\s]/g, '');
+      const parts = clean.split(':').map((p) => parseInt(p, 10));
+      if (parts.some((n) => isNaN(n))) return 0;
+      if (parts.length === 1) return parts[0];
+      if (parts.length === 2) return parts[0] * 60 + parts[1];
+      if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+      return 0;
+    };
+
+    const startSec = parseTime(saved.startTime);
+    const parsedEnd = parseTime(saved.endTime);
+    const durationSec = saved.durationSeconds || Math.max(1, parsedEnd - startSec);
+    const endSec = parsedEnd > startSec ? parsedEnd : startSec + durationSec;
+
     setSelectedCut({
       id: saved.id,
       title: saved.cutTitle,
       startTime: saved.startTime,
       endTime: saved.endTime,
-      startSeconds: 0,
-      endSeconds: saved.durationSeconds,
-      durationSeconds: saved.durationSeconds,
+      startSeconds: startSec,
+      endSeconds: endSec,
+      durationSeconds: durationSec,
       viralityScore: saved.viralityScore,
       hook: saved.cutTitle,
       payoff: 'Desfecho marcante',

@@ -345,20 +345,30 @@ class StateManager {
       const prevYt = state.credentials.youtube;
       const nextStatus = creds.youtube.status || prevYt.status;
       state.credentials.youtube = {
-        ...prevYt,
-        ...creds.youtube,
+        status: creds.youtube.status !== undefined ? creds.youtube.status : prevYt.status,
+        channelTitle: creds.youtube.channelTitle !== undefined ? creds.youtube.channelTitle : prevYt.channelTitle,
+        displayName: creds.youtube.displayName !== undefined ? creds.youtube.displayName : prevYt.displayName,
+        accountName: creds.youtube.accountName !== undefined ? creds.youtube.accountName : prevYt.accountName,
+        customUrl: creds.youtube.customUrl !== undefined ? creds.youtube.customUrl : prevYt.customUrl,
+        avatar: creds.youtube.avatar !== undefined ? creds.youtube.avatar : prevYt.avatar,
+        verifiedAt: creds.youtube.verifiedAt !== undefined ? creds.youtube.verifiedAt : prevYt.verifiedAt,
+        clientId: creds.youtube.clientId !== undefined ? creds.youtube.clientId : prevYt.clientId,
         accessToken: preserveRealSecret(creds.youtube.accessToken, prevYt.accessToken, nextStatus),
         refreshToken: preserveRealSecret(creds.youtube.refreshToken, prevYt.refreshToken, nextStatus),
         clientSecret: preserveRealSecret(creds.youtube.clientSecret, prevYt.clientSecret, nextStatus),
-        cookies: creds.youtube.cookies !== undefined ? creds.youtube.cookies : prevYt.cookies,
+        cookies: preserveRealSecret(creds.youtube.cookies, prevYt.cookies, nextStatus),
       };
     }
     if (creds.instagram) {
       const prevIg = state.credentials.instagram;
       const nextStatus = creds.instagram.status || prevIg.status;
       state.credentials.instagram = {
-        ...prevIg,
-        ...creds.instagram,
+        status: creds.instagram.status !== undefined ? creds.instagram.status : prevIg.status,
+        accountName: creds.instagram.accountName !== undefined ? creds.instagram.accountName : prevIg.accountName,
+        avatar: creds.instagram.avatar !== undefined ? creds.instagram.avatar : prevIg.avatar,
+        verifiedAt: creds.instagram.verifiedAt !== undefined ? creds.instagram.verifiedAt : prevIg.verifiedAt,
+        businessAccountId: creds.instagram.businessAccountId !== undefined ? creds.instagram.businessAccountId : prevIg.businessAccountId,
+        appId: creds.instagram.appId !== undefined ? creds.instagram.appId : prevIg.appId,
         accessToken: preserveRealSecret(creds.instagram.accessToken, prevIg.accessToken, nextStatus),
         appSecret: preserveRealSecret(creds.instagram.appSecret, prevIg.appSecret, nextStatus),
       };
@@ -367,8 +377,11 @@ class StateManager {
       const prevTt = state.credentials.tiktok;
       const nextStatus = creds.tiktok.status || prevTt.status;
       state.credentials.tiktok = {
-        ...prevTt,
-        ...creds.tiktok,
+        status: creds.tiktok.status !== undefined ? creds.tiktok.status : prevTt.status,
+        displayName: creds.tiktok.displayName !== undefined ? creds.tiktok.displayName : prevTt.displayName,
+        avatar: creds.tiktok.avatar !== undefined ? creds.tiktok.avatar : prevTt.avatar,
+        verifiedAt: creds.tiktok.verifiedAt !== undefined ? creds.tiktok.verifiedAt : prevTt.verifiedAt,
+        clientKey: creds.tiktok.clientKey !== undefined ? creds.tiktok.clientKey : prevTt.clientKey,
         accessToken: preserveRealSecret(creds.tiktok.accessToken, prevTt.accessToken, nextStatus),
         clientSecret: preserveRealSecret(creds.tiktok.clientSecret, prevTt.clientSecret, nextStatus),
       };
@@ -377,8 +390,11 @@ class StateManager {
       const prevKw = state.credentials.kwai || ({} as any);
       const nextStatus = creds.kwai.status || prevKw.status;
       state.credentials.kwai = {
-        ...prevKw,
-        ...creds.kwai,
+        status: creds.kwai.status !== undefined ? creds.kwai.status : prevKw.status,
+        accountName: creds.kwai.accountName !== undefined ? creds.kwai.accountName : prevKw.accountName,
+        avatar: creds.kwai.avatar !== undefined ? creds.kwai.avatar : prevKw.avatar,
+        verifiedAt: creds.kwai.verifiedAt !== undefined ? creds.kwai.verifiedAt : prevKw.verifiedAt,
+        appId: creds.kwai.appId !== undefined ? creds.kwai.appId : prevKw.appId,
         accessToken: preserveRealSecret(creds.kwai.accessToken, prevKw.accessToken, nextStatus),
         appSecret: preserveRealSecret(creds.kwai.appSecret, prevKw.appSecret, nextStatus),
       };
@@ -386,8 +402,9 @@ class StateManager {
     if (creds.gemini) {
       const prevGm = state.credentials.gemini || ({} as any);
       state.credentials.gemini = {
-        ...prevGm,
-        ...creds.gemini,
+        status: creds.gemini.status !== undefined ? creds.gemini.status : prevGm.status,
+        model: creds.gemini.model !== undefined ? creds.gemini.model : prevGm.model,
+        verifiedAt: creds.gemini.verifiedAt !== undefined ? creds.gemini.verifiedAt : prevGm.verifiedAt,
         apiKey: preserveRealSecret(creds.gemini.apiKey, prevGm.apiKey, creds.gemini.status),
       };
     }
@@ -398,9 +415,13 @@ class StateManager {
       };
     }
     if (creds.aiConfig) {
-      state.credentials.aiConfig = {
-        ...(state.credentials.aiConfig || {}),
-        ...creds.aiConfig,
+      const prevAi = (state.credentials as any).aiConfig || {};
+      const aiInput = creds.aiConfig as any;
+      (state.credentials as any).aiConfig = {
+        provider: aiInput.provider !== undefined ? aiInput.provider : prevAi.provider,
+        ollamaEndpoint: aiInput.ollamaEndpoint !== undefined ? aiInput.ollamaEndpoint : prevAi.ollamaEndpoint,
+        ollamaModel: aiInput.ollamaModel !== undefined ? aiInput.ollamaModel : prevAi.ollamaModel,
+        openAiKey: preserveRealSecret(aiInput.openAiKey || aiInput.openaiApiKey, prevAi.openAiKey || prevAi.openaiApiKey),
       };
     }
 

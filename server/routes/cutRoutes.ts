@@ -17,6 +17,8 @@ import {
   sanitizeTimestamp,
   isPathInsideDir,
   validateCutInterval,
+  parseHttpRange,
+  getUploadedFileOwner,
 } from '../middleware/security.js';
 
 export const cutRouter = Router();
@@ -169,6 +171,10 @@ cutRouter.get('/clips/:clipId/preview', async (req: Request, res: Response) => {
   const clipMeta = jobQueue.getRenderedClip(clipId);
   const filePath = clipMeta?.filePath || path.join(CLIPS_DIR, `${clipId}.mp4`);
 
+  if (clipMeta?.userId && req.userId && clipMeta.userId !== req.userId) {
+    return res.status(404).json({ error: 'Corte não encontrado.' });
+  }
+
   if (!fs.existsSync(filePath)) {
     return res.status(404).json({
       error: 'Corte ainda não foi renderizado ou expirou.',
@@ -182,15 +188,16 @@ cutRouter.get('/clips/:clipId/preview', async (req: Request, res: Response) => {
   const range = req.headers.range;
 
   if (range) {
-    const parts = range.replace(/bytes=/, '').split('-');
-    const start = parseInt(parts[0], 10);
-    const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-    const chunksize = end - start + 1;
-    const file = fs.createReadStream(filePath, { start, end });
+    const parsedRange = parseHttpRange(range, fileSize);
+    if (!parsedRange.valid) {
+      res.setHeader('Content-Range', `bytes */${fileSize}`);
+      return res.status(416).end();
+    }
+    const file = fs.createReadStream(filePath, { start: parsedRange.start, end: parsedRange.end });
     const head = {
-      'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+      'Content-Range': `bytes ${parsedRange.start}-${parsedRange.end}/${fileSize}`,
       'Accept-Ranges': 'bytes',
-      'Content-Length': chunksize,
+      'Content-Length': parsedRange.chunkSize,
       'Content-Type': 'video/mp4',
     };
     res.writeHead(206, head);
@@ -212,6 +219,10 @@ cutRouter.get('/clips/:clipId/download', async (req: Request, res: Response) => 
   const clipMeta = jobQueue.getRenderedClip(clipId);
   const filePath = clipMeta?.filePath || path.join(CLIPS_DIR, `${clipId}.mp4`);
 
+  if (clipMeta?.userId && req.userId && clipMeta.userId !== req.userId) {
+    return res.status(404).json({ error: 'Arquivo do corte não encontrado para download.' });
+  }
+
   if (!fs.existsSync(filePath)) {
     return res.status(404).json({ error: 'Arquivo do corte não encontrado para download.' });
   }
@@ -229,6 +240,16 @@ cutRouter.post('/batch/render', renderRateLimiter, async (req: Request, res: Res
     }
 
     let sourcePathToUse = sourceFilePath;
+    if (sourcePathToUse) {
+      if (!isPathInsideDir(sourcePathToUse, UPLOADS_DIR)) {
+        return res.status(403).json({ error: 'Acesso negado: caminho de arquivo fora do diretório de uploads.' });
+      }
+      const owner = getUploadedFileOwner(sourcePathToUse);
+      if (owner && req.userId && owner !== req.userId) {
+        return res.status(404).json({ error: 'Arquivo de vídeo não encontrado.' });
+      }
+    }
+
     if (!sourcePathToUse || !fs.existsSync(sourcePathToUse)) {
       const safeYt = normalizeSafeYouTubeUrl(videoUrl);
       if (!safeYt) {
@@ -241,10 +262,11 @@ cutRouter.post('/batch/render', renderRateLimiter, async (req: Request, res: Res
         videoUrl: safeYt.canonicalUrl,
         startTime: formatSecondsToMMSS(minStart),
         endTime: formatSecondsToMMSS(maxEnd),
+        userId: req.userId,
       });
     }
 
-    const task = jobQueue.createBatchRenderJob(cuts, sourcePathToUse);
+    const task = jobQueue.createBatchRenderJob(cuts, sourcePathToUse, req.userId);
     res.json({
       success: true,
       jobId: task.id,
@@ -260,8 +282,8 @@ cutRouter.post('/batch/render', renderRateLimiter, async (req: Request, res: Res
 // 5. Query Batch Job Status
 cutRouter.get('/batch/:batchId', (req: Request, res: Response) => {
   const jobId = req.params.batchId;
-  const job = jobQueue.getJob(jobId);
-  if (!job) {
+  const job = jobQueue.getJob(jobId) || jobQueue.get(jobId);
+  if (!job || (job.userId && req.userId && job.userId !== req.userId)) {
     return res.status(404).json({ error: 'Tarefa não encontrada.' });
   }
   res.json(job);
@@ -270,6 +292,10 @@ cutRouter.get('/batch/:batchId', (req: Request, res: Response) => {
 // 6. Cancel Batch Job
 cutRouter.post('/batch/:batchId/cancel', (req: Request, res: Response) => {
   const jobId = req.params.batchId;
+  const job = jobQueue.getJob(jobId) || jobQueue.get(jobId);
+  if (!job || (job.userId && req.userId && job.userId !== req.userId)) {
+    return res.status(404).json({ error: 'Tarefa não encontrada.' });
+  }
   const success = jobQueue.cancelJob(jobId);
   res.json({ success, message: success ? 'Tarefa cancelada com sucesso.' : 'Tarefa não encontrada.' });
 });
@@ -282,7 +308,7 @@ cutRouter.post('/clips/bulk-download', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Nenhum corte fornecido para empacotamento em ZIP.' });
     }
 
-    const task = jobQueue.createBatchZipJob(cuts, videoTitle);
+    const task = jobQueue.createBatchZipJob(cuts, videoTitle, req.userId);
     res.json({
       success: true,
       jobId: task.id,
@@ -298,15 +324,21 @@ cutRouter.post('/clips/bulk-download', async (req: Request, res: Response) => {
 // 8. Download Completed ZIP File
 cutRouter.get('/batch/:batchId/download', (req: Request, res: Response) => {
   const jobId = req.params.batchId;
-  const zipFiles = fs.readdirSync(TEMP_DIR).filter((f) => f.includes(jobId) && f.endsWith('.zip'));
+  const job = jobQueue.getJob(jobId) || jobQueue.get(jobId);
+  if (!job || (job.userId && req.userId && job.userId !== req.userId)) {
+    return res.status(404).json({ error: 'Arquivo ZIP não encontrado.' });
+  }
 
-  if (zipFiles.length === 0) {
+  // Exact deterministic ZIP lookup (no substring scanning to prevent collisions or traversal)
+  const zipName = `batch_${jobId}.zip`;
+  const zipPath = path.join(TEMP_DIR, zipName);
+
+  if (!fs.existsSync(zipPath) || !isPathInsideDir(zipPath, TEMP_DIR)) {
     return res.status(404).json({ error: 'Arquivo ZIP ainda não está pronto ou expirou.' });
   }
 
-  const zipPath = path.join(TEMP_DIR, zipFiles[0]);
   res.setHeader('Content-Type', 'application/zip');
-  res.download(zipPath, zipFiles[0]);
+  res.download(zipPath, zipName);
 });
 
 // 9. Legacy /download-youtube-cut with persistent CLIPS_DIR output
