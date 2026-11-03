@@ -39,6 +39,7 @@ export const envSchema = z.object({
   ENABLE_DEMO_LOGIN: z.string().optional(),
   MAX_CONCURRENT_FFMPEG: z.coerce.number().default(2),
   APP_URL: z.string().optional(),
+  SQLITE_DB_PATH: z.string().min(1).default('./data/database.sqlite'),
 }).superRefine((data, ctx) => {
   if (data.NODE_ENV === 'production' && !data.GEMINI_API_KEY) {
     ctx.addIssue({
@@ -68,6 +69,9 @@ export const env = validateEnv();
 // Environment Configuration
 export const PORT = env.PORT;
 export const GEMINI_API_KEY = env.GEMINI_API_KEY || '';
+export const SQLITE_DB_PATH = path.isAbsolute(env.SQLITE_DB_PATH)
+  ? env.SQLITE_DB_PATH
+  : path.resolve(ROOT_DIR, env.SQLITE_DB_PATH);
 
 // Normalize and auto-upgrade deprecated Gemini models (e.g., gemini-2.5-flash -> gemini-3.8-flash)
 function normalizeGeminiModel(modelName: string | undefined, defaultModel = 'gemini-3.8-flash'): string {

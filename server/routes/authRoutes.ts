@@ -354,7 +354,7 @@ authRouter.post('/auth/logout', (req: Request, res: Response) => {
 
   if (token) {
     try {
-      db.prepare('DELETE FROM user_sessions WHERE session_token = ?').run(token);
+      db.deleteSessionByRawToken(token);
     } catch {}
   }
 

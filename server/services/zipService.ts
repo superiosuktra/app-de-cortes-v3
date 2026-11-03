@@ -1,21 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import * as archiverModule from 'archiver';
-
-function createZipArchiveInstance(options?: any): any {
-  const mod: any = archiverModule;
-  if (mod.ZipArchive) {
-    return new mod.ZipArchive(options);
-  }
-  const defaultExport = mod.default || mod;
-  if (typeof defaultExport === 'function') {
-    return defaultExport('zip', options);
-  }
-  if (defaultExport && defaultExport.ZipArchive) {
-    return new defaultExport.ZipArchive(options);
-  }
-  throw new Error('Não foi possível instanciar o criador de arquivos zip');
-}
+import yazl from 'yazl';
 import { TEMP_DIR } from '../config.js';
 import { ViralCut } from '../../src/types.js';
 
@@ -111,9 +96,7 @@ export async function createBatchZipArchive(options: CreateZipOptions): Promise<
   const zipPath = path.join(TEMP_DIR, zipFileName);
 
   const output = fs.createWriteStream(zipPath);
-  const archive = createZipArchiveInstance({
-    zlib: { level: 5 }, // Balanced compression speed and size
-  });
+  const archive = new yazl.ZipFile();
 
   return new Promise((resolve, reject) => {
     output.on('close', () => {
@@ -126,12 +109,12 @@ export async function createBatchZipArchive(options: CreateZipOptions): Promise<
       });
     });
 
-    archive.on('error', (err: any) => {
+    archive.outputStream.on('error', (err: Error) => {
       console.error('[ZipService] Erro durante criação do ZIP:', err);
       reject(err);
     });
 
-    archive.pipe(output);
+    archive.outputStream.pipe(output);
 
     let processedCount = 0;
 
@@ -143,17 +126,17 @@ export async function createBatchZipArchive(options: CreateZipOptions): Promise<
 
       // Video file
       if (cut.filePath && fs.existsSync(cut.filePath)) {
-        archive.file(cut.filePath, { name: `${baseName}.mp4` });
+        archive.addFile(cut.filePath, `${baseName}.mp4`);
       }
 
       // SRT subtitle
       const srtContent = generateSrtContent(cut);
-      archive.append(srtContent, { name: `${baseName}.srt` });
+      archive.addBuffer(Buffer.from(srtContent, 'utf8'), `${baseName}.srt`);
 
       // JSON metadata inside metadata/ folder
       if (includeMetadataFolder) {
         const metadataJson = JSON.stringify(cut, null, 2);
-        archive.append(metadataJson, { name: `metadata/${baseName}.json` });
+        archive.addBuffer(Buffer.from(metadataJson, 'utf8'), `metadata/${baseName}.json`);
       }
 
       processedCount++;
@@ -162,7 +145,7 @@ export async function createBatchZipArchive(options: CreateZipOptions): Promise<
 
     // 2. Add CSV index at the root of the ZIP
     const csvContent = generateCsvIndex(cuts);
-    archive.append(csvContent, { name: 'index_cortes.csv' });
+    archive.addBuffer(Buffer.from(csvContent, 'utf8'), 'index_cortes.csv');
 
     // 3. Add summary README.txt
     const readmeContent = `AI VIRAL SHORTS CUTTER - PACOTE DE EXPORTAÇÃO
@@ -176,8 +159,8 @@ ESTRUTURA DO PACOTE:
 - index_cortes.csv: Planilha com métricas, ganchos e timestamps de todos os cortes.
 - Pasta metadata/: Arquivos JSON com a análise completa e parâmetros de cada corte.
 `;
-    archive.append(readmeContent, { name: 'LEIA_ME.txt' });
+    archive.addBuffer(Buffer.from(readmeContent, 'utf8'), 'LEIA_ME.txt');
 
-    archive.finalize();
+    archive.end();
   });
 }

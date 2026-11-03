@@ -421,7 +421,11 @@ class StateManager {
         provider: aiInput.provider !== undefined ? aiInput.provider : prevAi.provider,
         ollamaEndpoint: aiInput.ollamaEndpoint !== undefined ? aiInput.ollamaEndpoint : prevAi.ollamaEndpoint,
         ollamaModel: aiInput.ollamaModel !== undefined ? aiInput.ollamaModel : prevAi.ollamaModel,
-        openAiKey: preserveRealSecret(aiInput.openAiKey || aiInput.openaiApiKey, prevAi.openAiKey || prevAi.openaiApiKey),
+        activeModel: aiInput.activeModel !== undefined ? aiInput.activeModel : prevAi.activeModel,
+        status: aiInput.status !== undefined ? aiInput.status : prevAi.status,
+        latencyMs: aiInput.latencyMs !== undefined ? aiInput.latencyMs : prevAi.latencyMs,
+        openaiApiKey: preserveRealSecret(aiInput.openaiApiKey, prevAi.openaiApiKey),
+        anthropicApiKey: preserveRealSecret(aiInput.anthropicApiKey, prevAi.anthropicApiKey),
       };
     }
 

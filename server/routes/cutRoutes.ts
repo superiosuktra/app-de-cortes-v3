@@ -17,7 +17,7 @@ import { UPLOADS_DIR, TEMP_DIR, CLIPS_DIR } from '../config.js';
 import { renderRealCutVideo, downloadAndProcessYouTubeCut, downloadYouTubeSlice } from '../services/ffmpegService.js';
 import { renderClip, validateMediaFile } from '../services/renderService.js';
 import { parseTimeToSeconds, formatSecondsToMMSS } from '../services/geminiService.js';
-import { jobQueue } from '../services/jobQueueService.js';
+import { jobQueue, validateBatchCutsArray } from '../services/jobQueueService.js';
 import { sanitizeFileName } from '../services/zipService.js';
 import { uploadVideoToYouTube } from '../services/youtubeService.js';
 import { stateManager } from '../services/stateService.js';
@@ -347,9 +347,14 @@ cutRouter.get('/clips/:clipId/download', async (req: Request, res: Response) => 
 cutRouter.post('/batch/render', renderRateLimiter, async (req: Request, res: Response) => {
   try {
     const { cuts, videoUrl, sourceFilePath } = req.body;
-    if (!Array.isArray(cuts) || cuts.length === 0) {
+    if (!Array.isArray(cuts) || cuts.length === 0 || cuts.length > 20) {
       return res.status(400).json({ error: 'Nenhum corte selecionado para renderização em lote.' });
     }
+    const cutsValidation = validateBatchCutsArray(cuts);
+    if (!cutsValidation.valid || !cutsValidation.sanitizedCuts) {
+      return res.status(400).json({ error: cutsValidation.error || 'Cortes inválidos.' });
+    }
+    const validatedCuts = cutsValidation.sanitizedCuts;
 
     let sourcePathToUse = sourceFilePath;
     if (sourcePathToUse) {
@@ -368,8 +373,8 @@ cutRouter.post('/batch/render', renderRateLimiter, async (req: Request, res: Res
         return res.status(400).json({ error: 'URL do YouTube ou arquivo de vídeo local obrigatório.' });
       }
       // Download raw slice spanning from earliest cut to latest cut
-      const minStart = Math.min(...cuts.map((c) => c.startSeconds || 0));
-      const maxEnd = Math.max(...cuts.map((c) => c.endSeconds || c.startSeconds + 45));
+      const minStart = Math.min(...validatedCuts.map((c) => c.startSeconds || 0));
+      const maxEnd = Math.max(...validatedCuts.map((c) => c.endSeconds || c.startSeconds + 45));
       sourcePathToUse = await downloadYouTubeSlice({
         videoUrl: safeYt.canonicalUrl,
         startTime: formatSecondsToMMSS(minStart),
@@ -378,7 +383,7 @@ cutRouter.post('/batch/render', renderRateLimiter, async (req: Request, res: Res
       });
     }
 
-    const task = jobQueue.createBatchRenderJob(cuts, sourcePathToUse, req.userId);
+    const task = jobQueue.createBatchRenderJob(validatedCuts, sourcePathToUse, req.userId);
     res.json({
       success: true,
       jobId: task.id,

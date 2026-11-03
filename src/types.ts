@@ -179,7 +179,6 @@ export interface AiProviderConfig {
   ollamaModel: string;
   activeModel: string;
   openaiApiKey?: string;
-  openAiKey?: string;
   anthropicApiKey?: string;
   status?: 'connected' | 'disconnected' | 'testing';
   latencyMs?: number;

@@ -6,7 +6,7 @@ import { DATA_DIR, CLIPS_DIR, TEMP_DIR } from '../config.js';
 import { renderClip, validateMediaFile } from './renderService.js';
 import { createBatchZipArchive } from './zipService.js';
 import { ViralCut, BatchRenderJob } from '../../src/types.js';
-import { validateCutInterval } from '../middleware/security.js';
+import { validateCutInterval, validateResourceId } from '../middleware/security.js';
 import db from '../db.js';
 
 const createPLimit = (pLimit as any).default || pLimit;
@@ -208,6 +208,9 @@ class JobQueueService {
   }
 
   public createBatchRenderJob(cuts: ViralCut[], sourceVideoPath: string, userId?: string): RenderJobTask {
+    if (!userId || !cuts.every((cut) => validateResourceId(cut.id))) {
+      throw new Error('IDs de cortes inválidos para renderização em lote.');
+    }
     const jobId = `batch_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
     const task: RenderJobTask = {
       id: jobId,
@@ -508,7 +511,7 @@ export function validateBatchCutsArray(cuts: any[]): { valid: boolean; error?: s
   const sanitizedCuts: any[] = [];
   for (const cut of cuts) {
     if (!cut || typeof cut !== 'object') return { valid: false, error: 'Corte inválido no lote.' };
-    if (!cut.id || typeof cut.id !== 'string') return { valid: false, error: 'ID do corte ausente.' };
+    if (!validateResourceId(cut.id)) return { valid: false, error: 'ID do corte inválido.' };
     if (!cut.title || typeof cut.title !== 'string') return { valid: false, error: 'Título do corte deve ser texto.' };
     const interval = validateCutInterval(cut.startTime, cut.endTime, 300);
     if (!interval.valid) return { valid: false, error: interval.error || 'Intervalo de tempo inválido.' };

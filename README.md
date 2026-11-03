@@ -25,7 +25,7 @@ cp .env.example .env
 | `PORT` | Não | `3000` | Porta HTTP do servidor Express. |
 | `NODE_ENV` | Não | `development` | Em `production`, desativa logins demo, bloqueia chamadas locais inseguras de IA e reforça CSP/cookies seguros. |
 | `APP_URL` | Não | `http://localhost:3000` | URL pública da aplicação para redirecionamentos OAuth do Google e cookies de sessão. |
-| `SQLITE_DB_PATH` | Não | `./data/database.sqlite` | Caminho do banco de dados SQLite persistente (WAL mode e foreign keys ativos). |
+| `SQLITE_DB_PATH` | Não | `./data/database.sqlite` | Caminho do banco de dados SQLite persistente (relativo à raiz do projeto ou absoluto; WAL mode e foreign keys ativos). |
 | `GEMINI_API_KEY` | Sim (Produção) | — | Chave de API do Google AI Studio para geração de transcrições e identificação de momentos virais. |
 | `GEMINI_TEXT_MODEL` | Não | `gemini-3.8-flash` | Modelo de texto padrão do Gemini. |
 | `GEMINI_VISION_MODEL` | Não | `gemini-3.8-flash` | Modelo multimodal de visão computacional. |

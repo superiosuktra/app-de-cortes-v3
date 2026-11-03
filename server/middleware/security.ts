@@ -446,9 +446,16 @@ export async function assertSafeOutboundUrl(
   const lookup = options?.lookupFn || (async (h: string) => {
     try {
       const records = await dns.promises.lookup(h, { all: true });
+      if (!records.length) {
+        throw new Error(`Nenhum endereço retornado para ${h}`);
+      }
       return records;
-    } catch {
-      throw new Error(`Falha na resolução de DNS para ${h}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'falha desconhecida';
+      throw new Error(
+        `SSRF bloqueado: não foi possível verificar com segurança o destino ${h} (${message})`,
+        { cause: error }
+      );
     }
   });
 
@@ -522,6 +529,13 @@ export function isPathInsideDir(filePath: string, allowedDir: string): boolean {
   const resolvedFile = path.resolve(filePath);
   const resolvedDir = path.resolve(allowedDir);
   return resolvedFile.startsWith(resolvedDir + path.sep) || resolvedFile === resolvedDir;
+}
+
+export function validateResourceId(value: unknown, maxLength = 128): value is string {
+  return typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= maxLength &&
+    /^[A-Za-z0-9_-]+$/.test(value);
 }
 
 /**

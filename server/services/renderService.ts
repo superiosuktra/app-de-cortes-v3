@@ -106,19 +106,7 @@ export async function validateMediaFile(filePath: string): Promise<MediaProbeRes
       fileSize: stats.size,
     };
   } catch (err: any) {
-    console.warn(`[RenderService] ffprobe warning on ${filePath}:`, err?.message || err);
-    // If ffprobe tool exited with an error but file size is substantial (>10KB), consider valid
-    if (stats.size > 10240) {
-      return {
-        valid: true,
-        duration: 30,
-        hasVideo: true,
-        hasAudio: true,
-        width: 1080,
-        height: 1920,
-        fileSize: stats.size,
-      };
-    }
+    console.warn(`[RenderService] ffprobe validation failed for ${filePath}:`, err?.message || err);
     return {
       valid: false,
       duration: 0,

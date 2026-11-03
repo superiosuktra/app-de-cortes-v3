@@ -2,16 +2,16 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import Database from 'better-sqlite3';
-import { ROOT_DIR } from './config.js';
+import { SQLITE_DB_PATH } from './config.js';
 
-const dataDir = path.join(ROOT_DIR, 'data');
+const dataDir = path.dirname(SQLITE_DB_PATH);
 if (!fs.existsSync(dataDir)) {
   try {
     fs.mkdirSync(dataDir, { recursive: true });
   } catch {}
 }
 
-const sqlitePath = path.join(dataDir, 'database.sqlite');
+const sqlitePath = SQLITE_DB_PATH;
 const legacyJsonPath = path.join(dataDir, 'database.json');
 const legacyBakPath = path.join(dataDir, 'database.json.bak');
 
