@@ -308,8 +308,7 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
         setPostStatus('✅ Download do corte real do YouTube concluído com sucesso!');
       }
     } catch (err: any) {
-      alert(`Erro ao baixar corte: ${err.message}`);
-      setPostStatus(`❌ Erro: ${err.message}`);
+      setPostStatus(`❌ Erro ao baixar corte: ${err.message}`);
     } finally {
       setIsDownloadingCut(false);
     }

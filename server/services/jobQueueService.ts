@@ -633,41 +633,5 @@ export function cleanExpiredJobsAndFiles(maxAgeMs: number = 60 * 60 * 1000): { e
       expiredJobs++;
     }
   }
-
-  // Also clean old temporary render clips in CLIPS_DIR
-  try {
-    if (fs.existsSync(CLIPS_DIR)) {
-      const files = fs.readdirSync(CLIPS_DIR);
-      for (const f of files) {
-        if (!f.endsWith('.mp4')) continue;
-        const fullPath = path.join(CLIPS_DIR, f);
-        try {
-          const s = fs.statSync(fullPath);
-          if (now - s.mtimeMs > maxAgeMs) {
-            fs.unlinkSync(fullPath);
-            expiredFiles++;
-          }
-        } catch {}
-      }
-    }
-  } catch {}
-
-  // Also clean old temporary files in TEMP_DIR
-  try {
-    if (fs.existsSync(TEMP_DIR)) {
-      const files = fs.readdirSync(TEMP_DIR);
-      for (const f of files) {
-        const fullPath = path.join(TEMP_DIR, f);
-        try {
-          const s = fs.statSync(fullPath);
-          if (now - s.mtimeMs > maxAgeMs) {
-            fs.unlinkSync(fullPath);
-            expiredFiles++;
-          }
-        } catch {}
-      }
-    }
-  } catch {}
-
   return { expiredJobs, expiredFiles };
 }

@@ -84,6 +84,7 @@ export const EditorTab: React.FC<EditorTabProps> = ({
   const [isSaved, setIsSaved] = useState<boolean>(false);
   const [isRenderingCut, setIsRenderingCut] = useState<boolean>(false);
   const [renderProgressMsg, setRenderProgressMsg] = useState<string>('');
+  const [renderError, setRenderError] = useState<string>('');
   const [confirmClearEditQueue, setConfirmClearEditQueue] = useState<boolean>(false);
   const [removeSilence, setRemoveSilence] = useState<boolean>(false);
 
@@ -195,8 +196,9 @@ export const EditorTab: React.FC<EditorTabProps> = ({
       a.remove();
       window.URL.revokeObjectURL(url);
       confetti({ particleCount: 60, spread: 70 });
+      setRenderError('');
     } catch (err: any) {
-      alert(`Erro ao processar corte do YouTube: ${err.message}`);
+      setRenderError(`Erro ao processar corte do YouTube: ${err.message}`);
     } finally {
       setIsRenderingCut(false);
       setRenderProgressMsg('');
@@ -1037,6 +1039,19 @@ export const EditorTab: React.FC<EditorTabProps> = ({
                 <span>{removeSilence ? '✓ Ativado (-32dB)' : 'Desativado'}</span>
               </button>
             </div>
+
+            {renderError && (
+              <div className="p-3 rounded-xl bg-red-950/50 border border-red-500/40 text-red-300 text-xs flex items-center justify-between">
+                <span>{renderError}</span>
+                <button
+                  type="button"
+                  onClick={() => setRenderError('')}
+                  className="text-red-400 hover:text-white ml-2 text-xs font-bold cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
 
             {/* Actions Bar */}
             <div className="flex flex-wrap items-center gap-3 pt-2">

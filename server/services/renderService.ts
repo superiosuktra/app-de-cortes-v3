@@ -72,7 +72,7 @@ export async function validateMediaFile(filePath: string): Promise<MediaProbeRes
         'json',
         filePath,
       ],
-      { timeout: 15000, maxBuffer: 5 * 1024 * 1024 }
+      { timeout: 15000 }
     );
 
     const data = JSON.parse(stdout);
@@ -284,8 +284,6 @@ export async function renderClip(params: RenderClipParams): Promise<{
 
   const ffmpegArgs: string[] = [
     '-y',
-    '-loglevel',
-    'error',
     '-ss',
     String(startSec),
     '-t',
@@ -333,7 +331,7 @@ export async function renderClip(params: RenderClipParams): Promise<{
 
   console.log(`[RenderService] Executando FFmpeg para gerar: ${finalOutPath}`);
   try {
-    await execFilePromise(ffmpegCmd, ffmpegArgs, { timeout: 180000, maxBuffer: 10 * 1024 * 1024 });
+    await execFilePromise(ffmpegCmd, ffmpegArgs, { timeout: 180000 });
   } catch (renderErr: any) {
     console.error('[RenderService] Erro na execução do FFmpeg:', renderErr?.message || renderErr);
     throw new Error(`Falha na renderização de vídeo pelo FFmpeg: ${renderErr?.message || 'Processo abortado'}`, { cause: renderErr });

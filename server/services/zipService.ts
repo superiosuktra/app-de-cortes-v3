@@ -99,44 +99,19 @@ export async function createBatchZipArchive(options: CreateZipOptions): Promise<
   const archive = new yazl.ZipFile();
 
   return new Promise((resolve, reject) => {
-    let hasCleanedUp = false;
-    const cleanupAndReject = (err: Error) => {
-      if (hasCleanedUp) return;
-      hasCleanedUp = true;
-      try {
-        output.destroy();
-      } catch {}
-      fs.promises.unlink(zipPath).catch(() => {});
-      reject(err);
-    };
-
-    output.on('close', async () => {
-      try {
-        const stats = await fs.promises.stat(zipPath);
-        console.log(`[ZipService] Arquivo ZIP concluído: ${zipPath} (${(stats.size / (1024 * 1024)).toFixed(2)} MB)`);
-        resolve({
-          zipPath,
-          totalSize: stats.size,
-          filesCount: cuts.length,
-        });
-      } catch (err: any) {
-        cleanupAndReject(err);
-      }
-    });
-
-    output.on('error', (err: Error) => {
-      console.error('[ZipService] Erro no stream de escrita do ZIP:', err);
-      cleanupAndReject(err);
-    });
-
-    archive.on('error', (err: Error) => {
-      console.error('[ZipService] Erro no arquivador yazl:', err);
-      cleanupAndReject(err);
+    output.on('close', () => {
+      const stats = fs.statSync(zipPath);
+      console.log(`[ZipService] Arquivo ZIP concluído: ${zipPath} (${(stats.size / (1024 * 1024)).toFixed(2)} MB)`);
+      resolve({
+        zipPath,
+        totalSize: stats.size,
+        filesCount: cuts.length,
+      });
     });
 
     archive.outputStream.on('error', (err: Error) => {
       console.error('[ZipService] Erro durante criação do ZIP:', err);
-      cleanupAndReject(err);
+      reject(err);
     });
 
     archive.outputStream.pipe(output);

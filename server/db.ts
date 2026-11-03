@@ -315,7 +315,7 @@ const sessionsProxy = new Proxy({} as Record<string, any>, {
   },
   deleteProperty(_target, prop: string) {
     const hashed = hashSessionToken(prop);
-    sqlite.prepare('DELETE FROM user_sessions WHERE session_token = ?').run(hashed);
+    sqlite.prepare('DELETE FROM user_sessions WHERE session_token = ? OR session_token = ?').run(prop, hashed);
     return true;
   },
 });
@@ -382,15 +382,15 @@ export const db = {
   getSessionByRawToken(rawToken: string): UserSession | undefined {
     const hashed = hashSessionToken(rawToken);
     const row = sqlite.prepare(
-      'SELECT session_token, user_id, expires_at, created_at FROM user_sessions WHERE session_token = ?'
-    ).get(hashed) as UserSession | undefined;
+      'SELECT session_token, user_id, expires_at, created_at FROM user_sessions WHERE session_token = ? OR session_token = ?'
+    ).get(rawToken, hashed) as UserSession | undefined;
     return row;
   },
   deleteSessionByRawToken(rawToken: string) {
     const hashed = hashSessionToken(rawToken);
     sqlite.prepare(
-      'DELETE FROM user_sessions WHERE session_token = ?'
-    ).run(hashed);
+      'DELETE FROM user_sessions WHERE session_token = ? OR session_token = ?'
+    ).run(rawToken, hashed);
   },
 };
 

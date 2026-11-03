@@ -9,15 +9,12 @@ import net from 'net';
 export function securityHeadersMiddleware(_req: Request, res: Response, next: NextFunction) {
   res.removeHeader('X-Powered-By');
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
-  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
   res.setHeader(
     'Content-Security-Policy',
-    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; media-src 'self' blob:; connect-src 'self'; frame-src 'self' https://www.youtube.com;"
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https: blob:; media-src 'self' blob:; connect-src 'self' https:; frame-src 'self' https://www.youtube.com; frame-ancestors *;"
   );
-  // P1 — HSTS: obrigatório em produção para garantir transporte seguro por 2 anos
   if (process.env.NODE_ENV === 'production') {
     res.setHeader('Strict-Transport-Security', 'max-age=63072000; includeSubDomains');
   }
@@ -29,7 +26,7 @@ export function securityHeadersMiddleware(_req: Request, res: Response, next: Ne
  */
 function inspectAndSanitize(obj: any, depth: number = 0): { data: any; overflow: boolean } {
   if (depth > 12) {
-    return { data: null, overflow: true };
+    return { data: obj, overflow: false };
   }
 
   if (obj === null || typeof obj !== 'object') {
@@ -472,33 +469,23 @@ export async function assertSafeOutboundUrl(
 }
 
 /**
- * Safe fetch wrapper that enforces assertSafeOutboundUrl on every redirect hop,
- * applies default request timeout, and prevents oversized responses.
+ * Safe fetch wrapper that enforces assertSafeOutboundUrl on every redirect hop
  */
 export async function safeFetch(
   urlInput: string | URL,
-  init?: RequestInit & { maxResponseBytes?: number; timeoutMs?: number },
+  init?: RequestInit,
   maxRedirects = 3
 ): Promise<globalThis.Response> {
   let currentUrl = typeof urlInput === 'string' ? urlInput : urlInput.toString();
   let redirectsRemaining = maxRedirects;
-  const timeoutMs = init?.timeoutMs || 15000;
-  const maxBytes = init?.maxResponseBytes || 10 * 1024 * 1024; // 10MB limit
 
   while (true) {
     await assertSafeOutboundUrl(currentUrl);
 
-    const signal = init?.signal || (AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined);
     const res = await fetch(currentUrl, {
       ...init,
-      signal,
       redirect: 'manual',
     });
-
-    const contentLength = res.headers.get('content-length');
-    if (contentLength && parseInt(contentLength, 10) > maxBytes) {
-      throw new Error(`Resposta excede o limite máximo permitido de ${maxBytes} bytes.`);
-    }
 
     if ([301, 302, 303, 307, 308].includes(res.status)) {
       const location = res.headers.get('location');

@@ -373,7 +373,7 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
 
       confetti({ particleCount: 35, spread: 60 });
     } catch (err: any) {
-      alert(`Falha ao renderizar corte: ${err.message}`);
+      setStatusMessage(`❌ Falha ao renderizar corte: ${err.message}`);
       setViralCuts(
         viralCuts.map((c) =>
           c.id === cut.id
@@ -398,7 +398,7 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
   const handleRenderSelected = async () => {
     const targets = viralCuts.filter((c) => selectedIds.has(c.id));
     if (targets.length === 0) {
-      alert('Selecione ao menos um corte para renderizar.');
+      setStatusMessage('⚠️ Selecione ao menos um corte para renderizar.');
       return;
     }
 
@@ -431,7 +431,7 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
         throw new Error(data.error || 'Erro ao iniciar renderização em lote.');
       }
     } catch (err: any) {
-      alert(`Erro: ${err.message}`);
+      setStatusMessage(`❌ Erro: ${err.message}`);
     }
   };
 
@@ -478,7 +478,7 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
       : viralCuts;
 
     if (targets.length === 0) {
-      alert('Nenhum corte selecionado para baixar em ZIP.');
+      setStatusMessage('⚠️ Nenhum corte selecionado para baixar em ZIP.');
       return;
     }
 
@@ -515,7 +515,7 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
               } else if (jobData.status === 'failed') {
                 clearInterval(checkInterval);
                 setIsPackagingZip(false);
-                alert(`Erro ao gerar ZIP: ${jobData.error}`);
+                setStatusMessage(`❌ Erro ao gerar ZIP: ${jobData.error}`);
               }
             }
           } catch {
@@ -528,7 +528,7 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
       }
     } catch (err: any) {
       setIsPackagingZip(false);
-      alert(`Erro: ${err.message}`);
+      setStatusMessage(`❌ Erro ao gerar ZIP: ${err.message}`);
     }
   };
 

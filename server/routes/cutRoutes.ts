@@ -160,12 +160,9 @@ function handleRouteError(res: Response, err: any, context: string) {
     errMsg.includes('Sign in to confirm you’re not a bot') ||
     errMsg.includes('cookies') ||
     errMsg.includes('confirm you’re not a bot');
-  const isProd = process.env.NODE_ENV === 'production';
   const userError = isBotError
     ? 'O YouTube solicitou confirmação de acesso no servidor em nuvem. Salve seus cookies do YouTube na Central de Conexões ou envie o arquivo diretamente na aba Upload de Vídeo.'
-    : isProd
-      ? 'Falha interna ao processar o vídeo. Tente novamente em instantes.'
-      : err?.message || 'Falha interna ao processar o vídeo. Tente novamente em instantes.';
+    : err?.message || 'Falha interna ao processar o vídeo. Tente novamente em instantes.';
 
   return res.status(500).json({
     error: userError,
@@ -182,21 +179,16 @@ cutRouter.post('/clips/:clipId/render', renderRateLimiter, async (req: Request, 
 
   try {
     const existing = jobQueue.getRenderedClip(clipId);
-    if (existing) {
-      if (existing.userId && req.userId && existing.userId !== req.userId) {
-        return res.status(404).json({ error: 'Corte não encontrado.' });
-      }
-      if (existing.userId === req.userId && (await checkFileExists(existing.filePath))) {
-        return res.json({
-          success: true,
-          clipId,
-          status: 'completed',
-          previewUrl: `/api/clips/${clipId}/preview`,
-          downloadUrl: `/api/clips/${clipId}/download`,
-          fileSize: existing.fileSize,
-          duration: existing.duration,
-        });
-      }
+    if (existing && (await checkFileExists(existing.filePath))) {
+      return res.json({
+        success: true,
+        clipId,
+        status: 'completed',
+        previewUrl: `/api/clips/${clipId}/preview`,
+        downloadUrl: `/api/clips/${clipId}/download`,
+        fileSize: existing.fileSize,
+        duration: existing.duration,
+      });
     }
 
     const {
@@ -314,18 +306,6 @@ cutRouter.get('/clips/:clipId/preview', async (req: Request, res: Response) => {
       return res.status(416).end();
     }
     const file = fs.createReadStream(filePath, { start: parsedRange.start, end: parsedRange.end });
-    file.on('error', (streamErr) => {
-      console.error('[CutRoutes] Erro na leitura do preview de vídeo (Range):', streamErr?.message || streamErr);
-      if (!res.headersSent) {
-        res.status(500).end();
-      } else {
-        res.destroy();
-      }
-    });
-    res.on('close', () => {
-      file.destroy();
-    });
-
     const head = {
       'Content-Range': `bytes ${parsedRange.start}-${parsedRange.end}/${fileSize}`,
       'Accept-Ranges': 'bytes',
@@ -335,26 +315,13 @@ cutRouter.get('/clips/:clipId/preview', async (req: Request, res: Response) => {
     res.writeHead(206, head);
     file.pipe(res);
   } else {
-    const file = fs.createReadStream(filePath);
-    file.on('error', (streamErr) => {
-      console.error('[CutRoutes] Erro na leitura do preview de vídeo:', streamErr?.message || streamErr);
-      if (!res.headersSent) {
-        res.status(500).end();
-      } else {
-        res.destroy();
-      }
-    });
-    res.on('close', () => {
-      file.destroy();
-    });
-
     const head = {
       'Content-Length': fileSize,
       'Content-Type': 'video/mp4',
       'Accept-Ranges': 'bytes',
     };
     res.writeHead(200, head);
-    file.pipe(res);
+    fs.createReadStream(filePath).pipe(res);
   }
 });
 
@@ -380,7 +347,7 @@ cutRouter.get('/clips/:clipId/download', async (req: Request, res: Response) => 
 cutRouter.post('/batch/render', renderRateLimiter, async (req: Request, res: Response) => {
   try {
     const { cuts, videoUrl, sourceFilePath } = req.body;
-    if (!Array.isArray(cuts) || cuts.length === 0) {
+    if (!Array.isArray(cuts) || cuts.length === 0 || cuts.length > 20) {
       return res.status(400).json({ error: 'Nenhum corte selecionado para renderização em lote.' });
     }
     const cutsValidation = validateBatchCutsArray(cuts);
@@ -604,7 +571,7 @@ cutRouter.post('/upload-and-cut-short', uploadRateLimiter, upload.single('video'
       return res.status(400).json({ error: 'Token de autorização do YouTube não configurado.' });
     }
 
-    const clipId = `up_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
+    const clipId = `up_${Date.now()}`;
     const outPath = path.join(CLIPS_DIR, `${clipId}.mp4`);
 
     const renderResult = await renderClip({
@@ -619,7 +586,6 @@ cutRouter.post('/upload-and-cut-short', uploadRateLimiter, upload.single('video'
       framing,
     });
     renderedPath = renderResult.outputPath;
-    jobQueue.registerRenderedClip(clipId, renderResult.outputPath, renderResult.duration, renderResult.fileSize, req.userId);
 
     const parsedTags =
       typeof tags === 'string'
@@ -693,7 +659,7 @@ cutRouter.post('/render-download-cut', uploadRateLimiter, upload.single('video')
       return res.status(400).json({ error: intervalCheck.error });
     }
 
-    const clipId = `local_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
+    const clipId = `local_${Date.now()}`;
     const outPath = path.join(CLIPS_DIR, `${clipId}.mp4`);
 
     const renderResult = await renderClip({
