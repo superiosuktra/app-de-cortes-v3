@@ -14,6 +14,7 @@ import { videoRouter } from './server/routes/videoRoutes.js';
 import { cutRouter } from './server/routes/cutRoutes.js';
 import { socialRouter } from './server/routes/socialRoutes.js';
 import { stateRouter } from './server/routes/stateRoutes.js';
+import db from './server/db.js';
 // Worker facade removed (Phase 2)
 import { cleanExpiredJobsAndFiles } from './server/services/jobQueueService.js';
 
@@ -89,6 +90,7 @@ export function createApp() {
   app.get('/ready', (_req: Request, res: Response) => {
     try {
       ensureDirectories();
+      db.prepare('SELECT 1').get();
       res.json({
         status: 'ready',
         database: 'connected',
@@ -133,13 +135,15 @@ async function startServer() {
 
   // Global Express Error Handler — registered last, after Vite/static middleware
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-    console.error('[Express Error Handler]:', err?.message || err);
+    const correlationId = res.getHeader('X-Request-Id') || 'unknown';
+    console.error(`[Express Error Handler][${correlationId}]:`, err?.stack || err?.message || err);
     if (res.headersSent) {
       return;
     }
     const status = typeof err?.status === 'number' ? err.status : 500;
     res.status(status).json({
-      error: err?.message || 'Erro interno no servidor.',
+      error: isProd && status >= 500 ? 'Erro interno no servidor.' : err?.message || 'Erro interno no servidor.',
+      correlationId,
     });
   });
 

@@ -31,8 +31,32 @@ const aiRateLimiter = createRateLimiter({
   message: 'Limite de análises de IA por minuto atingido. Aguarde alguns segundos.',
 });
 
+const videoInfoRateLimiter = createRateLimiter({
+  windowMs: 60 * 1000,
+  maxRequests: 60,
+  scope: 'video-info',
+  byUser: true,
+  message: 'Limite de consultas de vídeo por minuto atingido.',
+});
+
+const transcriptRateLimiter = createRateLimiter({
+  windowMs: 60 * 1000,
+  maxRequests: 30,
+  scope: 'transcript',
+  byUser: true,
+  message: 'Limite de obtenção de transcrições por minuto atingido.',
+});
+
+const aiVerifyRateLimiter = createRateLimiter({
+  windowMs: 60 * 1000,
+  maxRequests: 10,
+  scope: 'ai-verify',
+  byUser: true,
+  message: 'Muitas tentativas de verificação de provedores de IA. Aguarde alguns instantes.',
+});
+
 // 1. Fetch Video Metadata via oEmbed (Protected against SSRF)
-videoRouter.post('/video-info', async (req: Request, res: Response) => {
+videoRouter.post('/video-info', videoInfoRateLimiter, async (req: Request, res: Response) => {
   try {
     const { url } = req.body;
     const safeYt = normalizeSafeYouTubeUrl(url);
@@ -49,7 +73,7 @@ videoRouter.post('/video-info', async (req: Request, res: Response) => {
 });
 
 // 2. Fetch Video Transcript
-videoRouter.post('/transcript', async (req: Request, res: Response) => {
+videoRouter.post('/transcript', transcriptRateLimiter, async (req: Request, res: Response) => {
   try {
     const { url } = req.body;
     const safeYt = normalizeSafeYouTubeUrl(url);
@@ -76,8 +100,8 @@ async function handleTrending(req: Request, res: Response) {
     res.status(500).json({ error: error.message || 'Erro ao buscar vídeos em alta.' });
   }
 }
-videoRouter.get('/trending', handleTrending);
-videoRouter.post('/trending', handleTrending);
+videoRouter.get('/trending', videoInfoRateLimiter, handleTrending);
+videoRouter.post('/trending', videoInfoRateLimiter, handleTrending);
 
 // 4. Detect & Analyze Viral Cuts with Gemini + Multimodal Framing + Sequential Continuation Engine
 async function handleAnalyze(req: Request, res: Response) {
@@ -203,7 +227,7 @@ videoRouter.post('/ffmpeg-command', (req: Request, res: Response) => {
 });
 
 // 7. Verify Google AI Studio Gemini API Key
-videoRouter.post('/gemini/verify', async (req: Request, res: Response) => {
+videoRouter.post('/gemini/verify', aiVerifyRateLimiter, async (req: Request, res: Response) => {
   try {
     const { apiKey } = req.body;
     const incomingKey = String(apiKey || '').trim();
@@ -233,7 +257,7 @@ videoRouter.post('/gemini/verify', async (req: Request, res: Response) => {
       stateManager.updateCredentials(
         {
           gemini: {
-            apiKey: keyToTest,
+            apiKey: isMasked ? undefined : incomingKey,
             status: 'connected',
             model: modelToUse,
           },
@@ -273,7 +297,7 @@ videoRouter.get('/gemini/status', (req: Request, res: Response) => {
 });
 
 // 9. Test Local AI (Ollama / LM Studio) Endpoint with SSRF Protection
-videoRouter.post('/ai/test-local', async (req: Request, res: Response) => {
+videoRouter.post('/ai/test-local', aiVerifyRateLimiter, async (req: Request, res: Response) => {
   if (!req.userId) {
     return res.status(401).json({ error: 'Não autenticado.' });
   }

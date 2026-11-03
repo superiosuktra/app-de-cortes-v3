@@ -224,6 +224,7 @@ export async function downloadYouTubeSlice({
 
   const ytdlpArgs = [
     '--no-playlist',
+    '--no-progress',
     '--user-agent',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     '--extractor-args',
@@ -246,11 +247,11 @@ export async function downloadYouTubeSlice({
   try {
     try {
       // Attempt 1: Direct binary execution
-      await execFilePromise(ytdlpBinary, ytdlpArgs, { timeout: 150000 });
+      await execFilePromise(ytdlpBinary, ytdlpArgs, { timeout: 150000, maxBuffer: 10 * 1024 * 1024 });
     } catch (directErr: any) {
       console.warn('[YouTube Downloader] Tentativa direta falhou, tentando via python3:', directErr?.message || directErr);
       // Attempt 2: Fallback to python3 execution
-      await execFilePromise('python3', [ytdlpBinary, ...ytdlpArgs], { timeout: 150000 });
+      await execFilePromise('python3', [ytdlpBinary, ...ytdlpArgs], { timeout: 150000, maxBuffer: 10 * 1024 * 1024 });
     }
 
     if (fs.existsSync(outBase) && fs.statSync(outBase).size > 1000) {
@@ -298,7 +299,7 @@ export async function downloadYouTubeSlice({
     ];
 
     try {
-      await execFilePromise(ffmpegPath, fallbackArgs, { timeout: 60000 });
+      await execFilePromise(ffmpegPath, fallbackArgs, { timeout: 60000, maxBuffer: 10 * 1024 * 1024 });
       if (fs.existsSync(outBase) && fs.statSync(outBase).size > 1000) {
         console.log(`[YouTube Downloader] Base de alta definição gerada com sucesso para síntese do corte (${sliceDuration}s).`);
         return outBase;
@@ -521,6 +522,8 @@ export async function renderRealCutVideo({
     try {
       const coldOpenArgs = [
         '-y',
+        '-loglevel',
+        'error',
         '-ss',
         String(absTeaserStart),
         '-t',
@@ -562,7 +565,7 @@ export async function renderRealCutVideo({
         outPath,
       ];
 
-      await execFilePromise(ffmpegCmd, coldOpenArgs, { timeout: 150000 });
+      await execFilePromise(ffmpegCmd, coldOpenArgs, { timeout: 150000, maxBuffer: 10 * 1024 * 1024 });
       if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1000) {
         return outPath;
       }
@@ -582,6 +585,8 @@ export async function renderRealCutVideo({
 
   const ffmpegArgs = [
     '-y',
+    '-loglevel',
+    'error',
     '-ss',
     String(startSec),
     '-t',
@@ -620,7 +625,7 @@ export async function renderRealCutVideo({
   ];
 
   try {
-    await execFilePromise(ffmpegCmd, ffmpegArgs, { timeout: 150000 });
+    await execFilePromise(ffmpegCmd, ffmpegArgs, { timeout: 150000, maxBuffer: 10 * 1024 * 1024 });
 
     if (!fs.existsSync(outPath) || fs.statSync(outPath).size === 0) {
       throw new Error('O arquivo de vídeo renderizado não foi gerado pelo FFmpeg.');

@@ -54,7 +54,7 @@ authRouter.get('/auth/me', (req: Request, res: Response) => {
 });
 
 // 2. Demo Login (ONLY permitted when ENABLE_DEMO_LOGIN=true and non-production)
-authRouter.post('/auth/demo-login', (req: Request, res: Response) => {
+authRouter.post('/auth/demo-login', demoLoginRateLimiter, (req: Request, res: Response) => {
   if (process.env.NODE_ENV === 'production' || process.env.ENABLE_DEMO_LOGIN !== 'true') {
     return res.status(403).json({
       error: 'Modo demonstração desabilitado.',
@@ -149,11 +149,16 @@ authRouter.get('/auth/google/login', (req: Request, res: Response) => {
     path: '/',
   });
 
+  const isYouTubeConnect = req.query.youtubeOAuth === '1' || req.query.scope === 'youtube';
+  const requestedScopes = isYouTubeConnect
+    ? 'openid email profile https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly'
+    : 'openid email profile';
+
   const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
   authUrl.searchParams.set('client_id', envClientId);
   authUrl.searchParams.set('redirect_uri', callbackUri);
   authUrl.searchParams.set('response_type', 'code');
-  authUrl.searchParams.set('scope', 'openid email profile https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly');
+  authUrl.searchParams.set('scope', requestedScopes);
   authUrl.searchParams.set('state', state);
   authUrl.searchParams.set('access_type', 'offline');
   authUrl.searchParams.set('prompt', 'consent select_account');
@@ -291,23 +296,25 @@ authRouter.get('/auth/google/callback', async (req: Request, res: Response) => {
       `).run(userId, googleId, verifiedEmail, name, picture);
     }
 
-    // Save YouTube credentials isolated to this user's account
-    stateManager.updateCredentials(
-      {
-        youtube: {
-          accessToken: exchange.accessToken,
-          refreshToken: exchange.refreshToken,
-          status: 'connected',
-          channelTitle: exchange.channelName,
-          displayName: exchange.channelName,
-          accountName: exchange.channelName,
-          customUrl: exchange.customUrl,
-          avatar: exchange.avatar || picture,
-          verifiedAt: new Date().toLocaleTimeString('pt-BR'),
+    // Save YouTube credentials isolated to this user's account if YouTube access was authorized
+    if (exchange.channelName && exchange.channelName !== 'Canal do YouTube') {
+      stateManager.updateCredentials(
+        {
+          youtube: {
+            accessToken: exchange.accessToken,
+            refreshToken: exchange.refreshToken,
+            status: 'connected',
+            channelTitle: exchange.channelName,
+            displayName: exchange.channelName,
+            accountName: exchange.channelName,
+            customUrl: exchange.customUrl,
+            avatar: exchange.avatar || picture,
+            verifiedAt: new Date().toLocaleTimeString('pt-BR'),
+          },
         },
-      },
-      userId
-    );
+        userId
+      );
+    }
 
     // Create session token (hashed at rest in user_sessions)
     const sessionToken = crypto.randomBytes(32).toString('hex');
