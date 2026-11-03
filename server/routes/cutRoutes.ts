@@ -455,7 +455,6 @@ cutRouter.get('/batch/:batchId/download', async (req: Request, res: Response) =>
 
 // 9. Legacy /download-youtube-cut with persistent CLIPS_DIR output
 cutRouter.post('/download-youtube-cut', renderRateLimiter, async (req: Request, res: Response) => {
-  let renderedPath: string | null = null;
   try {
     const {
       videoUrl,
@@ -523,7 +522,7 @@ cutRouter.post('/download-youtube-cut', renderRateLimiter, async (req: Request, 
 
 // 10. Upload Local Video File, Cut with FFmpeg and Post to YouTube
 cutRouter.post('/upload-and-cut-short', uploadRateLimiter, upload.single('video') as any, async (req: Request, res: Response) => {
-  let renderedPath = '';
+  let renderedPath: string | undefined;
   try {
     const file = req.file;
     if (!file) {

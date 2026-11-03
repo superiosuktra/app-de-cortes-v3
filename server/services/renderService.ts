@@ -346,7 +346,7 @@ export async function renderClip(params: RenderClipParams): Promise<{
     await execFilePromise(ffmpegCmd, ffmpegArgs, { timeout: 180000 });
   } catch (renderErr: any) {
     console.error('[RenderService] Erro na execução do FFmpeg:', renderErr?.message || renderErr);
-    throw new Error(`Falha na renderização de vídeo pelo FFmpeg: ${renderErr?.message || 'Processo abortado'}`);
+    throw new Error(`Falha na renderização de vídeo pelo FFmpeg: ${renderErr?.message || 'Processo abortado'}`, { cause: renderErr });
   }
 
   // Post-render validation

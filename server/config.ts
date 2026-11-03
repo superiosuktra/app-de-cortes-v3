@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import path from 'path';
 import fs from 'fs';
-import os from 'os';
+import { z } from 'zod';
 
 // Base Directories
 export const ROOT_DIR = path.resolve(import.meta.dirname, '..');
@@ -27,9 +27,48 @@ export function ensureDirectories() {
 
 ensureDirectories();
 
+// 1. Zod environment validation schema
+export const envSchema = z.object({
+  PORT: z.coerce.number().default(3000),
+  NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+  GEMINI_API_KEY: z.string().optional(),
+  GEMINI_TEXT_MODEL: z.string().default('gemini-3.8-flash'),
+  GEMINI_VISION_MODEL: z.string().default('gemini-3.8-flash'),
+  GOOGLE_CLIENT_ID: z.string().optional(),
+  GOOGLE_CLIENT_SECRET: z.string().optional(),
+  ENABLE_DEMO_LOGIN: z.string().optional(),
+  MAX_CONCURRENT_FFMPEG: z.coerce.number().default(2),
+  APP_URL: z.string().optional(),
+}).superRefine((data, ctx) => {
+  if (data.NODE_ENV === 'production' && !data.GEMINI_API_KEY) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'A variável GEMINI_API_KEY é obrigatória em ambiente de produção.',
+      path: ['GEMINI_API_KEY'],
+    });
+  }
+});
+
+export function validateEnv() {
+  const result = envSchema.safeParse(process.env);
+  if (!result.success) {
+    console.error('❌ Falha crítica de validação de ambiente (Zod):');
+    for (const issue of result.error.issues) {
+      console.error(`  - [${issue.path.join('.')}] ${issue.message}`);
+    }
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error(`Falha no boot de produção: ${result.error.issues.map((i) => i.message).join('; ')}`);
+    }
+  }
+  return result.success ? result.data : envSchema.parse({ ...process.env, NODE_ENV: 'development' });
+}
+
+export const env = validateEnv();
+
 // Environment Configuration
-export const PORT = Number(process.env.PORT) || 3000;
-export const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+export const PORT = env.PORT;
+export const GEMINI_API_KEY = env.GEMINI_API_KEY || '';
+
 // Normalize and auto-upgrade deprecated Gemini models (e.g., gemini-2.5-flash -> gemini-3.8-flash)
 function normalizeGeminiModel(modelName: string | undefined, defaultModel = 'gemini-3.8-flash'): string {
   const clean = (modelName || '').trim();
@@ -39,9 +78,9 @@ function normalizeGeminiModel(modelName: string | undefined, defaultModel = 'gem
   return clean;
 }
 
-export const GEMINI_TEXT_MODEL = normalizeGeminiModel(process.env.GEMINI_TEXT_MODEL, 'gemini-3.8-flash');
-export const GEMINI_VISION_MODEL = normalizeGeminiModel(process.env.GEMINI_VISION_MODEL, 'gemini-3.8-flash');
-export const NODE_ENV = process.env.NODE_ENV || 'development';
+export const GEMINI_TEXT_MODEL = normalizeGeminiModel(env.GEMINI_TEXT_MODEL, 'gemini-3.8-flash');
+export const GEMINI_VISION_MODEL = normalizeGeminiModel(env.GEMINI_VISION_MODEL, 'gemini-3.8-flash');
+export const NODE_ENV = env.NODE_ENV;
 
 /**
  * Finds a suitable TrueType Font on the current operating system (Windows, Linux, macOS).

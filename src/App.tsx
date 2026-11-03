@@ -1,17 +1,29 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Header } from './components/Header';
-import { TrendingTab } from './components/TrendingTab';
-import { AnalyzeTab } from './components/AnalyzeTab';
-import { EditorTab } from './components/EditorTab';
-import { PublisherTab } from './components/PublisherTab';
-import { ConnectionSettings } from './components/ConnectionSettings';
 import { AutoBotStatus } from './components/AutoPostQueueManager';
 import { VideoInfo, ViralCut, SavedCut, PlatformCredentials, QueueItem, AutoPostSettings, SocialPlatform, AuthUser } from './types';
 import { fetchJson, getAuthToken, setAuthToken, authFetch } from './utils/api';
 import { Flame, Sparkles, Scissors, Share2, Compass, ShieldCheck, Key, Zap, Settings } from 'lucide-react';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { GoogleLoginGate } from './components/GoogleLoginGate';
+import { TabLoadingSkeleton } from './components/common/LoadingSkeleton';
 import confetti from 'canvas-confetti';
+
+const TrendingTab = React.lazy(() =>
+  import('./components/TrendingTab').then((m) => ({ default: m.TrendingTab }))
+);
+const AnalyzeTab = React.lazy(() =>
+  import('./components/AnalyzeTab').then((m) => ({ default: m.AnalyzeTab }))
+);
+const EditorTab = React.lazy(() =>
+  import('./components/EditorTab').then((m) => ({ default: m.EditorTab }))
+);
+const PublisherTab = React.lazy(() =>
+  import('./components/PublisherTab').then((m) => ({ default: m.PublisherTab }))
+);
+const ConnectionSettings = React.lazy(() =>
+  import('./components/ConnectionSettings').then((m) => ({ default: m.ConnectionSettings }))
+);
 
 const STORAGE_SAVED_CUTS_KEY = 'viral_shorts_saved_cuts_v2';
 const STORAGE_CREDENTIALS_KEY = 'viral_shorts_full_credentials_v1';
@@ -1548,7 +1560,7 @@ export default function App() {
             )}
           </div>
         ) : (
-          <>
+          <React.Suspense fallback={<TabLoadingSkeleton />}>
             {activeTab === 'trending' && (
               <TrendingTab
                 onSelectVideo={handleSelectTrendingVideo}
@@ -1641,7 +1653,7 @@ export default function App() {
                 onNavigateToTab={(tab) => setActiveTab(tab)}
               />
             )}
-          </>
+          </React.Suspense>
         )}
       </main>
 

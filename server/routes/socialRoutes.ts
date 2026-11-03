@@ -95,7 +95,7 @@ socialRouter.post('/post-social', async (req: Request, res: Response) => {
     }
 
     if (platform === 'youtube') {
-      const yaMatch = cleanToken.match(/(ya29\.[a-zA-Z0-9_\-\.]+)/);
+      const yaMatch = cleanToken.match(/(ya29\.[a-zA-Z0-9_\-.]+)/);
       if (yaMatch) {
         cleanToken = yaMatch[1];
       }
@@ -308,7 +308,7 @@ socialRouter.post('/post-youtube', async (req: Request, res: Response) => {
     const cleanRt = rawRt.startsWith('***') || rawRt.includes('••••') ? '' : rawRt;
     const useRefreshToken = (cleanRt || serverCreds.youtube.refreshToken || '').trim();
 
-    const yaMatch = tokenToUse.match(/(ya29\.[a-zA-Z0-9_\-\.]+)/);
+    const yaMatch = tokenToUse.match(/(ya29\.[a-zA-Z0-9_\-.]+)/);
     if (yaMatch) {
       tokenToUse = yaMatch[1];
     }

@@ -317,9 +317,9 @@ export async function downloadYouTubeSlice({
       rawMsg.includes('confirm you\'re not a bot');
 
     if (isBot) {
-      throw new Error('Sign in to confirm you’re not a bot. O YouTube bloqueou o download automático neste IP.');
+      throw new Error('Sign in to confirm you’re not a bot. O YouTube bloqueou o download automático neste IP.', { cause: err });
     }
-    throw new Error(`Falha no download do YouTube: ${rawMsg.slice(0, 150)}`);
+    throw new Error(`Falha no download do YouTube: ${rawMsg.slice(0, 150)}`, { cause: err });
   } finally {
     if (tempCookieFile && fs.existsSync(tempCookieFile)) {
       try {

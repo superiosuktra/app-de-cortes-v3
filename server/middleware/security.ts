@@ -349,7 +349,7 @@ export function parseHttpRange(
 }
 
 export function isPrivateIp(ip: string): boolean {
-  let clean = ip.toLowerCase().replace(/^[\[]|[\]]$/g, '').trim();
+  let clean = ip.toLowerCase().replace(/^\[|\]$/g, '').trim();
 
   // Handle decimal IP (e.g. 2130706433 -> 127.0.0.1)
   if (/^\d+$/.test(clean)) {
@@ -437,7 +437,7 @@ export async function assertSafeOutboundUrl(
     throw new Error(`Protocolo inseguro: ${parsed.protocol}. Apenas protocolos permitidos (http/https).`);
   }
 
-  const cleanHost = parsed.hostname.toLowerCase().replace(/^[\[]|[\]]$/g, '');
+  const cleanHost = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
   if (isPrivateIp(cleanHost)) {
     throw new Error(`SSRF bloqueado: endereço de rede privada ou local (${cleanHost})`);
   }

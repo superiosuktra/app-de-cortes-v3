@@ -582,7 +582,7 @@ export async function postToKwai({
       publishedAt: new Date().toISOString(),
     };
   } catch (err: any) {
-    throw new Error(`Falha ao publicar no Kwai: ${err.message}`);
+    throw new Error(`Falha ao publicar no Kwai: ${err.message}`, { cause: err });
   }
 }
 

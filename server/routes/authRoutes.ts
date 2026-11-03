@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import db from '../db.js';
 import { stateManager } from '../services/stateService.js';
 import { exchangeYouTubeAuthCode } from '../services/youtubeService.js';
-import { createRateLimiter } from '../middleware/security.js';
+import { createRateLimiter, parseCookies } from '../middleware/security.js';
 
 export const authRouter = Router();
 
@@ -27,18 +27,6 @@ function escapeHtml(str: string): string {
 
 function safeJsonScript(obj: any): string {
   return JSON.stringify(obj).replace(/</g, '\\u003c');
-}
-
-function parseCookies(header?: string): Record<string, string> {
-  const list: Record<string, string> = {};
-  if (!header) return list;
-  header.split(';').forEach((cookie) => {
-    const parts = cookie.split('=');
-    if (parts.length >= 2) {
-      list[parts[0].trim()] = decodeURIComponent(parts.slice(1).join('=').trim());
-    }
-  });
-  return list;
 }
 
 function getAppBaseUrl(req: Request): string {
