@@ -2,6 +2,16 @@ import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import fsPromises from 'fs/promises';
+
+async function checkFileExists(filePath: string): Promise<boolean> {
+  try {
+    await fsPromises.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
 import crypto from 'crypto';
 import { UPLOADS_DIR, TEMP_DIR, CLIPS_DIR } from '../config.js';
 import { renderRealCutVideo, downloadAndProcessYouTubeCut, downloadYouTubeSlice } from '../services/ffmpegService.js';
@@ -73,16 +83,18 @@ const uploadRateLimiter = createRateLimiter({
   message: 'Limite de uploads por minuto atingido. Aguarde alguns instantes antes de enviar outro arquivo.',
 });
 
-export function getUserUploadStorageBytes(userId: string): number {
+export async function getUserUploadStorageBytes(userId: string): Promise<number> {
   let total = 0;
   try {
-    if (!fs.existsSync(UPLOADS_DIR)) return 0;
-    const files = fs.readdirSync(UPLOADS_DIR);
+    const exists = await checkFileExists(UPLOADS_DIR);
+    if (!exists) return 0;
+    const files = await fsPromises.readdir(UPLOADS_DIR);
     for (const f of files) {
       const fullPath = path.join(UPLOADS_DIR, f);
       if (getUploadedFileOwner(fullPath) === userId) {
         try {
-          total += fs.statSync(fullPath).size;
+          const s = await fsPromises.stat(fullPath);
+          total += s.size;
         } catch {}
       }
     }
@@ -99,7 +111,7 @@ export async function validateUploadedFile(
   }
 
   // 1. Quota check
-  const currentUsage = getUserUploadStorageBytes(userId);
+  const currentUsage = await getUserUploadStorageBytes(userId);
   if (currentUsage + file.size > MAX_USER_STORAGE_BYTES) {
     return {
       valid: false,
@@ -167,7 +179,7 @@ cutRouter.post('/clips/:clipId/render', renderRateLimiter, async (req: Request, 
 
   try {
     const existing = jobQueue.getRenderedClip(clipId);
-    if (existing && fs.existsSync(existing.filePath)) {
+    if (existing && (await checkFileExists(existing.filePath))) {
       return res.json({
         success: true,
         clipId,
@@ -202,7 +214,7 @@ cutRouter.post('/clips/:clipId/render', renderRateLimiter, async (req: Request, 
       if (!owner || !req.userId || owner !== req.userId) {
         return res.status(404).json({ error: 'Arquivo de vídeo não encontrado.' });
       }
-      if (!fs.existsSync(sourceFilePath)) {
+      if (!(await checkFileExists(sourceFilePath))) {
         return res.status(404).json({ error: 'Arquivo de vídeo não encontrado no disco.' });
       }
       rawSourcePath = sourceFilePath;
@@ -221,7 +233,7 @@ cutRouter.post('/clips/:clipId/render', renderRateLimiter, async (req: Request, 
       return res.status(400).json({ error: 'Nenhum vídeo de origem fornecido (videoUrl ou sourceFilePath).' });
     }
 
-    if (!rawSourcePath || !fs.existsSync(rawSourcePath)) {
+    if (!rawSourcePath || !(await checkFileExists(rawSourcePath))) {
       return res.status(400).json({ error: 'Falha ao obter o vídeo de origem para processamento.' });
     }
 
@@ -259,10 +271,8 @@ cutRouter.post('/clips/:clipId/render', renderRateLimiter, async (req: Request, 
   } catch (err: any) {
     return handleRouteError(res, err, 'clips-render');
   } finally {
-    if (shouldCleanupSource && rawSourcePath && fs.existsSync(rawSourcePath)) {
-      try {
-        fs.unlinkSync(rawSourcePath);
-      } catch {}
+    if (shouldCleanupSource && rawSourcePath) {
+      await fsPromises.unlink(rawSourcePath).catch(() => {});
     }
   }
 });
@@ -277,7 +287,7 @@ cutRouter.get('/clips/:clipId/preview', async (req: Request, res: Response) => {
     return res.status(404).json({ error: 'Corte não encontrado.' });
   }
 
-  if (!fs.existsSync(filePath)) {
+  if (!(await checkFileExists(filePath))) {
     return res.status(404).json({
       error: 'Corte ainda não foi renderizado ou expirou.',
       clipId,
@@ -285,7 +295,7 @@ cutRouter.get('/clips/:clipId/preview', async (req: Request, res: Response) => {
     });
   }
 
-  const stat = fs.statSync(filePath);
+  const stat = await fsPromises.stat(filePath);
   const fileSize = stat.size;
   const range = req.headers.range;
 
@@ -325,7 +335,7 @@ cutRouter.get('/clips/:clipId/download', async (req: Request, res: Response) => 
     return res.status(404).json({ error: 'Arquivo do corte não encontrado para download.' });
   }
 
-  if (!fs.existsSync(filePath)) {
+  if (!(await checkFileExists(filePath))) {
     return res.status(404).json({ error: 'Arquivo do corte não encontrado para download.' });
   }
 
@@ -352,7 +362,7 @@ cutRouter.post('/batch/render', renderRateLimiter, async (req: Request, res: Res
       }
     }
 
-    if (!sourcePathToUse || !fs.existsSync(sourcePathToUse)) {
+    if (!sourcePathToUse || !(await checkFileExists(sourcePathToUse))) {
       const safeYt = normalizeSafeYouTubeUrl(videoUrl);
       if (!safeYt) {
         return res.status(400).json({ error: 'URL do YouTube ou arquivo de vídeo local obrigatório.' });
@@ -424,7 +434,7 @@ cutRouter.post('/clips/bulk-download', async (req: Request, res: Response) => {
 });
 
 // 8. Download Completed ZIP File
-cutRouter.get('/batch/:batchId/download', (req: Request, res: Response) => {
+cutRouter.get('/batch/:batchId/download', async (req: Request, res: Response) => {
   const jobId = req.params.batchId;
   const job = jobQueue.getJob(jobId) || jobQueue.get(jobId);
   if (!job || !job.userId || !req.userId || job.userId !== req.userId) {
@@ -435,7 +445,7 @@ cutRouter.get('/batch/:batchId/download', (req: Request, res: Response) => {
   const zipName = `batch_${jobId}.zip`;
   const zipPath = path.join(TEMP_DIR, zipName);
 
-  if (!fs.existsSync(zipPath) || !isPathInsideDir(zipPath, TEMP_DIR)) {
+  if (!(await checkFileExists(zipPath)) || !isPathInsideDir(zipPath, TEMP_DIR)) {
     return res.status(404).json({ error: 'Arquivo ZIP ainda não está pronto ou expirou.' });
   }
 
@@ -500,9 +510,7 @@ cutRouter.post('/download-youtube-cut', renderRateLimiter, async (req: Request, 
     });
 
     // Cleanup intermediate raw slice
-    try {
-      if (fs.existsSync(rawSlice)) fs.unlinkSync(rawSlice);
-    } catch {}
+    if (rawSlice) await fsPromises.unlink(rawSlice).catch(() => {});
 
     jobQueue.registerRenderedClip(clipId, renderResult.outputPath, renderResult.duration, renderResult.fileSize, req.userId);
 
@@ -523,13 +531,13 @@ cutRouter.post('/upload-and-cut-short', uploadRateLimiter, upload.single('video'
     }
 
     if (!req.userId) {
-      if (file.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+      if (file.path) await fsPromises.unlink(file.path).catch(() => {});
       return res.status(401).json({ error: 'Acesso não autorizado. Faça login para continuar.' });
     }
 
     const validation = await validateUploadedFile(file, req.userId);
     if (!validation.valid) {
-      if (file.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+      if (file.path) await fsPromises.unlink(file.path).catch(() => {});
       return res.status(validation.status || 400).json({ error: validation.error });
     }
 
@@ -609,9 +617,9 @@ cutRouter.post('/upload-and-cut-short', uploadRateLimiter, upload.single('video'
   } catch (err: any) {
     return handleRouteError(res, err, 'upload-and-cut-short');
   } finally {
-    try {
-      if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
-    } catch {}
+    if (req.file?.path) {
+      await fsPromises.unlink(req.file.path).catch(() => {});
+    }
   }
 });
 
@@ -624,13 +632,13 @@ cutRouter.post('/render-download-cut', uploadRateLimiter, upload.single('video')
     }
 
     if (!req.userId) {
-      if (file.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+      if (file.path) await fsPromises.unlink(file.path).catch(() => {});
       return res.status(401).json({ error: 'Acesso não autorizado. Faça login para continuar.' });
     }
 
     const validation = await validateUploadedFile(file, req.userId);
     if (!validation.valid) {
-      if (file.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+      if (file.path) await fsPromises.unlink(file.path).catch(() => {});
       return res.status(validation.status || 400).json({ error: validation.error });
     }
 
@@ -665,14 +673,14 @@ cutRouter.post('/render-download-cut', uploadRateLimiter, upload.single('video')
 
     const safeTitle = (title || 'corte_viral').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 30);
     res.download(outPath, `${safeTitle}.mp4`, () => {
-      try {
-        if (file?.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
-      } catch {}
+      if (file?.path) {
+        fsPromises.unlink(file.path).catch(() => {});
+      }
     });
   } catch (err: any) {
-    try {
-      if (file?.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
-    } catch {}
+    if (file?.path) {
+      await fsPromises.unlink(file.path).catch(() => {});
+    }
     return handleRouteError(res, err, 'render-download-cut');
   }
 });

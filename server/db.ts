@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
+import Database from 'better-sqlite3';
 import { ROOT_DIR } from './config.js';
 
 const dataDir = path.join(ROOT_DIR, 'data');
@@ -10,8 +11,9 @@ if (!fs.existsSync(dataDir)) {
   } catch {}
 }
 
-const dbStorePath = path.join(dataDir, 'database.json');
-const dbBakPath = path.join(dataDir, 'database.json.bak');
+const sqlitePath = path.join(dataDir, 'database.sqlite');
+const legacyJsonPath = path.join(dataDir, 'database.json');
+const legacyBakPath = path.join(dataDir, 'database.json.bak');
 
 export interface UserRecord {
   id: string;
@@ -39,325 +41,356 @@ export interface UserState {
   updated_at: string;
 }
 
-interface DbStore {
-  users: Record<string, UserRecord>;
-  user_sessions: Record<string, UserSession>;
-  user_states: Record<string, UserState>;
-  projects: Record<string, any>;
-  cuts: Record<string, any>;
-}
-
-// In-memory store with atomic JSON file persistence
-let store: DbStore = {
-  users: {},
-  user_sessions: {},
-  user_states: {},
-  projects: {},
-  cuts: {},
-};
-
-function loadStore() {
-  if (!fs.existsSync(dbStorePath)) {
-    return;
-  }
-
-  try {
-    const raw = fs.readFileSync(dbStorePath, 'utf-8');
-    const parsed = JSON.parse(raw);
-    store = {
-      users: parsed.users || {},
-      user_sessions: parsed.user_sessions || {},
-      user_states: parsed.user_states || {},
-      projects: parsed.projects || {},
-      cuts: parsed.cuts || {},
-    };
-  } catch (e) {
-    console.error('[Db] Falha ao carregar banco de dados corrompido:', e);
-    // Create backup of corrupted file
-    try {
-      const corruptPath = `${dbStorePath}.corrupt.${Date.now()}`;
-      fs.copyFileSync(dbStorePath, corruptPath);
-      console.warn(`[Db] Arquivo corrompido copiado para ${corruptPath}`);
-    } catch {}
-
-    // Attempt to recover from .bak
-    if (fs.existsSync(dbBakPath)) {
-      try {
-        const bakRaw = fs.readFileSync(dbBakPath, 'utf-8');
-        const parsed = JSON.parse(bakRaw);
-        store = {
-          users: parsed.users || {},
-          user_sessions: parsed.user_sessions || {},
-          user_states: parsed.user_states || {},
-          projects: parsed.projects || {},
-          cuts: parsed.cuts || {},
-        };
-        console.log('[Db] Banco de dados recuperado com sucesso a partir de backup .bak');
-      } catch (bakErr) {
-        console.error('[Db] Falha também ao carregar backup .bak:', bakErr);
-      }
-    }
-  }
-}
-
-function saveStore() {
-  try {
-    const content = JSON.stringify(store, null, 2);
-    // 1. Create backup of current store if it exists
-    if (fs.existsSync(dbStorePath)) {
-      try {
-        fs.copyFileSync(dbStorePath, dbBakPath);
-      } catch {}
-    }
-    // 2. Atomic write via temporary file + rename
-    const tmpPath = `${dbStorePath}.${crypto.randomUUID()}.tmp`;
-    fs.writeFileSync(tmpPath, content, 'utf-8');
-    fs.renameSync(tmpPath, dbStorePath);
-  } catch (e) {
-    console.error('[Db] Falha crítica ao persistir dados atomicamente:', e);
-  }
-}
-
-loadStore();
-
-export function initDb() {
-  console.log('✅ Banco de dados endurecido inicializado com persistência atômica em:', dbStorePath);
-}
-
-class Statement {
-  private sql: string;
-
-  constructor(sql: string) {
-    this.sql = sql.trim();
-  }
-
-  run(...params: any[]): { changes: number } {
-    const s = this.sql.toLowerCase();
-    const now = new Date().toISOString();
-
-    // 1. Insert or update users
-    if (s.includes('into users')) {
-      const [id, google_id, email, name, picture] = params;
-      const cleanEmail = email ? String(email).trim().toLowerCase() : undefined;
-
-      // Find existing user by ID or by email
-      let existingUserKey = Object.keys(store.users).find((k) => {
-        const u = store.users[k];
-        if (id && u.id === id) return true;
-        if (cleanEmail && u.email && u.email.toLowerCase() === cleanEmail) return true;
-        return false;
-      });
-
-      const effectiveId = existingUserKey || id || `usr_${crypto.randomUUID()}`;
-      const existing = store.users[effectiveId];
-
-      store.users[effectiveId] = {
-        id: effectiveId,
-        google_id: google_id ?? existing?.google_id,
-        email: cleanEmail ?? existing?.email,
-        name: name ?? existing?.name,
-        picture: picture ?? existing?.picture,
-        created_at: existing?.created_at || now,
-        last_login: now,
-      };
-
-      saveStore();
-      return { changes: 1 };
-    }
-
-    // 2. Insert or update user_sessions
-    if (s.includes('into user_sessions')) {
-      const [session_token, user_id, expires_at] = params;
-      if (session_token && user_id) {
-        const hashed = hashSessionToken(session_token);
-        store.user_sessions[hashed] = {
-          session_token: hashed,
-          user_id,
-          expires_at: expires_at || new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
-          created_at: now,
-        };
-        saveStore();
-        return { changes: 1 };
-      }
-      return { changes: 0 };
-    }
-
-    // 3. Delete expired sessions
-    if (s.includes('delete from user_sessions') && s.includes('expires_at < ?')) {
-      const [expiryThreshold] = params;
-      let count = 0;
-      for (const token of Object.keys(store.user_sessions)) {
-        if (store.user_sessions[token].expires_at < expiryThreshold) {
-          delete store.user_sessions[token];
-          count++;
-        }
-      }
-      if (count > 0) saveStore();
-      return { changes: count };
-    }
-
-    // 4. Delete user_sessions by token
-    if (s.includes('delete from user_sessions')) {
-      const [token] = params;
-      const hashed = token ? hashSessionToken(token) : '';
-      let changes = 0;
-      if (token && store.user_sessions[token]) {
-        delete store.user_sessions[token];
-        changes++;
-      }
-      if (hashed && store.user_sessions[hashed]) {
-        delete store.user_sessions[hashed];
-        changes++;
-      }
-      if (changes > 0) saveStore();
-      return { changes };
-    }
-
-    // 5. Insert or update user_states
-    if (s.includes('into user_states')) {
-      const [user_id, credentials_json, saved_cuts_json, queue_json, settings_json] = params;
-      if (user_id) {
-        const existing = store.user_states[user_id];
-        store.user_states[user_id] = {
-          user_id,
-          credentials_json: credentials_json !== undefined ? credentials_json : existing?.credentials_json,
-          saved_cuts_json: saved_cuts_json !== undefined ? saved_cuts_json : existing?.saved_cuts_json,
-          queue_json: queue_json !== undefined ? queue_json : existing?.queue_json,
-          settings_json: settings_json !== undefined ? settings_json : existing?.settings_json,
-          updated_at: now,
-        };
-        saveStore();
-        return { changes: 1 };
-      }
-      return { changes: 0 };
-    }
-
-    // Reject unknown queries instead of returning success
-    throw new Error(`[Db] Operação SQL não suportada pelo armazenamento: ${this.sql}`);
-  }
-
-  get(...params: any[]): any {
-    const s = this.sql.toLowerCase();
-
-    // 1. SELECT * FROM user_sessions WHERE session_token = ?
-    if (s.includes('from user_sessions')) {
-      const [token] = params;
-      if (!token) return undefined;
-      const hashed = hashSessionToken(token);
-      const session = store.user_sessions[token] || store.user_sessions[hashed];
-      if (!session) return undefined;
-      return {
-        user_id: session.user_id,
-        session_token: session.session_token,
-        expires_at: session.expires_at,
-        created_at: session.created_at,
-      };
-    }
-
-    // 2. SELECT id, email, name, picture FROM users WHERE ...
-    if (s.includes('from users')) {
-      if (s.includes('count(*)')) {
-        return { count: Object.keys(store.users).length };
-      }
-
-      const allUsers = Object.values(store.users);
-
-      if (s.includes('where email = ?')) {
-        const searchEmail = String(params[0] || '').trim().toLowerCase();
-        const found = allUsers.find((u) => u.email?.toLowerCase() === searchEmail);
-        return found ? { ...found } : undefined;
-      }
-
-      if (s.includes('where id = ? or email = ?')) {
-        const [searchId, searchEmail] = params;
-        const cleanEmail = searchEmail ? String(searchEmail).trim().toLowerCase() : undefined;
-        const found = allUsers.find(
-          (u) => u.id === searchId || (cleanEmail && u.email?.toLowerCase() === cleanEmail)
-        );
-        return found ? { ...found } : undefined;
-      }
-
-      if (s.includes('where id = ?')) {
-        const [searchId] = params;
-        const found = allUsers.find((u) => u.id === searchId);
-        return found ? { ...found } : undefined;
-      }
-
-      return allUsers[0] ? { ...allUsers[0] } : undefined;
-    }
-
-    // 3. SELECT * FROM user_states WHERE user_id = ?
-    if (s.includes('from user_states')) {
-      const [userId] = params;
-      if (!userId) return undefined;
-      const state = store.user_states[userId];
-      return state ? { ...state } : undefined;
-    }
-
-    return undefined;
-  }
-
-  all(...params: any[]): any[] {
-    const s = this.sql.toLowerCase();
-
-    if (s.includes('from users')) {
-      return Object.values(store.users).sort(
-        (a, b) => new Date(b.last_login).getTime() - new Date(a.last_login).getTime()
-      );
-    }
-
-    if (s.includes('from projects')) {
-      return Object.values(store.projects);
-    }
-
-    if (s.includes('from cuts')) {
-      return Object.values(store.cuts);
-    }
-
-    return [];
-  }
-}
-
 export function hashSessionToken(token: string): string {
   return crypto.createHash('sha256').update(String(token || '')).digest('hex');
 }
 
+// Initialize SQLite database instance
+const sqlite = new Database(sqlitePath);
+
+// Enable WAL mode, foreign keys, and normal synchronous mode
+sqlite.pragma('journal_mode = WAL');
+sqlite.pragma('foreign_keys = ON');
+sqlite.pragma('synchronous = NORMAL');
+
+function runMigrations() {
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      applied_at TEXT NOT NULL
+    );
+  `);
+
+  const appliedRows = sqlite.prepare('SELECT version FROM schema_migrations').all() as { version: number }[];
+  const appliedVersions = new Set(appliedRows.map((r) => r.version));
+
+  // Migration 1: Core tables with cascading foreign keys and default timestamps
+  if (!appliedVersions.has(1)) {
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        google_id TEXT,
+        email TEXT UNIQUE,
+        name TEXT,
+        picture TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        last_login TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS user_sessions (
+        session_token TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS user_states (
+        user_id TEXT PRIMARY KEY,
+        credentials_json TEXT,
+        saved_cuts_json TEXT,
+        queue_json TEXT,
+        settings_json TEXT,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS projects (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        name TEXT,
+        data_json TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS cuts (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        job_id TEXT,
+        title TEXT,
+        data_json TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS jobs (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        progress INTEGER DEFAULT 0,
+        current_step TEXT,
+        total_items INTEGER DEFAULT 0,
+        completed_items INTEGER DEFAULT 0,
+        failed_items INTEGER DEFAULT 0,
+        item_ids_json TEXT,
+        clip_data_json TEXT,
+        error TEXT,
+        zip_download_url TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS rendered_clips (
+        clip_id TEXT PRIMARY KEY,
+        user_id TEXT,
+        file_path TEXT NOT NULL,
+        duration REAL DEFAULT 0,
+        file_size INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions(user_id);
+      CREATE INDEX IF NOT EXISTS idx_user_sessions_expires_at ON user_sessions(expires_at);
+      CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs(user_id);
+      CREATE INDEX IF NOT EXISTS idx_rendered_clips_user_id ON rendered_clips(user_id);
+      CREATE INDEX IF NOT EXISTS idx_cuts_user_id ON cuts(user_id);
+      CREATE INDEX IF NOT EXISTS idx_projects_user_id ON projects(user_id);
+
+      -- Auto-provision users for orphan sessions and states
+      CREATE TRIGGER IF NOT EXISTS trg_ensure_user_for_session
+      BEFORE INSERT ON user_sessions
+      FOR EACH ROW
+      BEGIN
+        INSERT OR IGNORE INTO users (id, created_at, last_login)
+        VALUES (NEW.user_id, datetime('now'), datetime('now'));
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_ensure_user_for_state
+      BEFORE INSERT ON user_states
+      FOR EACH ROW
+      BEGIN
+        INSERT OR IGNORE INTO users (id, created_at, last_login)
+        VALUES (NEW.user_id, datetime('now'), datetime('now'));
+      END;
+    `);
+
+    sqlite.prepare(
+      'INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)'
+    ).run(1, '001_initial_schema', new Date().toISOString());
+    console.log('[Db] Migração 1 aplicada com sucesso: tabelas criadas.');
+  }
+
+  // Migration 2: Import legacy database.json if it exists and keep backup
+  if (!appliedVersions.has(2)) {
+    if (fs.existsSync(legacyJsonPath)) {
+      try {
+        // 1. Maintain backup of legacy database.json
+        fs.copyFileSync(legacyJsonPath, legacyBakPath);
+        const timestampedBak = `${legacyJsonPath}.migrated.${Date.now()}`;
+        fs.copyFileSync(legacyJsonPath, timestampedBak);
+
+        const raw = fs.readFileSync(legacyJsonPath, 'utf-8');
+        const parsed = JSON.parse(raw);
+
+        const insertUser = sqlite.prepare(`
+          INSERT OR IGNORE INTO users (id, google_id, email, name, picture, created_at, last_login)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `);
+        const insertSession = sqlite.prepare(`
+          INSERT OR IGNORE INTO user_sessions (session_token, user_id, expires_at, created_at)
+          VALUES (?, ?, ?, ?)
+        `);
+        const insertState = sqlite.prepare(`
+          INSERT OR IGNORE INTO user_states (user_id, credentials_json, saved_cuts_json, queue_json, settings_json, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `);
+
+        sqlite.transaction(() => {
+          if (parsed.users) {
+            for (const u of Object.values(parsed.users) as any[]) {
+              insertUser.run(
+                u.id,
+                u.google_id || null,
+                u.email || null,
+                u.name || null,
+                u.picture || null,
+                u.created_at || new Date().toISOString(),
+                u.last_login || new Date().toISOString()
+              );
+            }
+          }
+
+          if (parsed.user_sessions) {
+            for (const s of Object.values(parsed.user_sessions) as any[]) {
+              const token = s.session_token ? (s.session_token.length === 64 ? s.session_token : hashSessionToken(s.session_token)) : '';
+              if (token && s.user_id) {
+                insertUser.run(s.user_id, null, null, null, null, new Date().toISOString(), new Date().toISOString());
+                insertSession.run(
+                  token,
+                  s.user_id,
+                  s.expires_at || new Date().toISOString(),
+                  s.created_at || new Date().toISOString()
+                );
+              }
+            }
+          }
+
+          if (parsed.user_states) {
+            for (const st of Object.values(parsed.user_states) as any[]) {
+              if (st.user_id) {
+                insertUser.run(st.user_id, null, null, null, null, new Date().toISOString(), new Date().toISOString());
+                insertState.run(
+                  st.user_id,
+                  st.credentials_json || null,
+                  st.saved_cuts_json || null,
+                  st.queue_json || null,
+                  st.settings_json || null,
+                  st.updated_at || new Date().toISOString()
+                );
+              }
+            }
+          }
+        })();
+
+        console.log('[Db] Migração 2 aplicada: database.json migrado para SQLite com backup mantido.');
+      } catch (migrationErr) {
+        console.error('[Db] Erro ao migrar database.json para SQLite:', migrationErr);
+      }
+    }
+
+    sqlite.prepare(
+      'INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)'
+    ).run(2, '002_import_legacy_json', new Date().toISOString());
+  }
+}
+
+runMigrations();
+
+export function initDb() {
+  console.log('✅ SQLite (better-sqlite3) ativo em:', sqlitePath);
+}
+
+// Compatibility layer for direct dictionary access: db.data.users, db.data.sessions, etc.
+const usersProxy = new Proxy({} as Record<string, any>, {
+  get(_target, prop: string) {
+    if (typeof prop !== 'string' || prop === 'then') return undefined;
+    const row = sqlite.prepare('SELECT * FROM users WHERE id = ?').get(prop);
+    return row || undefined;
+  },
+  set(_target, prop: string, val: any) {
+    const id = val?.id || prop;
+    sqlite.prepare(`
+      INSERT OR REPLACE INTO users (id, google_id, email, name, picture, created_at, last_login)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      val?.google_id || null,
+      val?.email || null,
+      val?.name || null,
+      val?.picture || null,
+      val?.created_at || new Date().toISOString(),
+      val?.last_login || new Date().toISOString()
+    );
+    return true;
+  },
+  deleteProperty(_target, prop: string) {
+    sqlite.prepare('DELETE FROM users WHERE id = ?').run(prop);
+    return true;
+  },
+});
+
+const sessionsProxy = new Proxy({} as Record<string, any>, {
+  get(_target, prop: string) {
+    if (typeof prop !== 'string' || prop === 'then') return undefined;
+    const row = sqlite.prepare('SELECT * FROM user_sessions WHERE session_token = ?').get(prop);
+    return row || undefined;
+  },
+  set(_target, prop: string, val: any) {
+    const token = val?.session_token || prop;
+    const hashed = hashSessionToken(token);
+    sqlite.prepare(`
+      INSERT OR REPLACE INTO user_sessions (session_token, user_id, expires_at, created_at)
+      VALUES (?, ?, ?, ?)
+    `).run(
+      hashed,
+      val?.user_id,
+      val?.expires_at || new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+      val?.created_at || new Date().toISOString()
+    );
+    return true;
+  },
+  deleteProperty(_target, prop: string) {
+    const hashed = hashSessionToken(prop);
+    sqlite.prepare('DELETE FROM user_sessions WHERE session_token = ? OR session_token = ?').run(prop, hashed);
+    return true;
+  },
+});
+
+const userStatesProxy = new Proxy({} as Record<string, any>, {
+  get(_target, prop: string) {
+    if (typeof prop !== 'string' || prop === 'then') return undefined;
+    const row = sqlite.prepare('SELECT * FROM user_states WHERE user_id = ?').get(prop);
+    return row || undefined;
+  },
+  set(_target, prop: string, val: any) {
+    sqlite.prepare(`
+      INSERT OR REPLACE INTO user_states (user_id, credentials_json, saved_cuts_json, queue_json, settings_json, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      prop,
+      val?.credentials_json || null,
+      val?.saved_cuts_json || null,
+      val?.queue_json || null,
+      val?.settings_json || null,
+      val?.updated_at || new Date().toISOString()
+    );
+    return true;
+  },
+  deleteProperty(_target, prop: string) {
+    sqlite.prepare('DELETE FROM user_states WHERE user_id = ?').run(prop);
+    return true;
+  },
+});
+
 export const db = {
+  raw: sqlite,
   get data() {
     return {
-      users: store.users,
-      sessions: store.user_sessions,
-      user_sessions: store.user_sessions,
-      user_states: store.user_states,
-      projects: store.projects,
-      cuts: store.cuts,
+      users: usersProxy,
+      sessions: sessionsProxy,
+      user_sessions: sessionsProxy,
+      user_states: userStatesProxy,
+      projects: {},
+      cuts: {},
     };
   },
-  exec(_sql: string) {
-    // Schema creation is handled in-memory
+  exec(sql: string) {
+    return sqlite.exec(sql);
   },
   prepare(sql: string) {
-    return new Statement(sql);
+    return sqlite.prepare(sql);
+  },
+  transaction<T extends (...args: any[]) => any>(fn: T): T {
+    return sqlite.transaction(fn) as unknown as T;
   },
   createSession(userId: string, rawToken: string, expiresAtMs: number) {
     const hashed = hashSessionToken(rawToken);
-    store.user_sessions[hashed] = {
-      session_token: hashed,
-      user_id: userId,
-      expires_at: new Date(expiresAtMs).toISOString(),
-      created_at: new Date().toISOString(),
-    };
-    saveStore();
+    sqlite.prepare(`
+      INSERT OR REPLACE INTO user_sessions (session_token, user_id, expires_at, created_at)
+      VALUES (?, ?, ?, ?)
+    `).run(
+      hashed,
+      userId,
+      new Date(expiresAtMs).toISOString(),
+      new Date().toISOString()
+    );
   },
-  getSessionByRawToken(rawToken: string) {
+  getSessionByRawToken(rawToken: string): UserSession | undefined {
     const hashed = hashSessionToken(rawToken);
-    return store.user_sessions[rawToken] || store.user_sessions[hashed];
+    const row = sqlite.prepare(
+      'SELECT session_token, user_id, expires_at, created_at FROM user_sessions WHERE session_token = ? OR session_token = ?'
+    ).get(rawToken, hashed) as UserSession | undefined;
+    return row;
   },
   deleteSessionByRawToken(rawToken: string) {
     const hashed = hashSessionToken(rawToken);
-    delete store.user_sessions[rawToken];
-    delete store.user_sessions[hashed];
-    saveStore();
+    sqlite.prepare(
+      'DELETE FROM user_sessions WHERE session_token = ? OR session_token = ?'
+    ).run(rawToken, hashed);
   },
 };
 

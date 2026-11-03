@@ -14,7 +14,7 @@ import { videoRouter } from './server/routes/videoRoutes.js';
 import { cutRouter } from './server/routes/cutRoutes.js';
 import { socialRouter } from './server/routes/socialRoutes.js';
 import { stateRouter } from './server/routes/stateRoutes.js';
-import './server/queue/videoWorker.js';
+// Worker facade removed (Phase 2)
 import { cleanExpiredJobsAndFiles } from './server/services/jobQueueService.js';
 
 

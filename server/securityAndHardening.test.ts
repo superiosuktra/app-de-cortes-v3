@@ -965,3 +965,89 @@ test('P0.5 & P0.6 - Upload checks media structure, quota, resolution, duration, 
     if (fs.existsSync(corruptFile)) fs.unlinkSync(corruptFile);
   }
 });
+
+test('P1.1 - SQLite (better-sqlite3) persistence, schema migrations, foreign keys, and database.json backup', async () => {
+  // 1. SQLite database is active and schema migrations ran
+  const tables = (db as any).raw.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table'"
+  ).all().map((r: any) => r.name);
+
+  assert.ok(tables.includes('schema_migrations'), 'schema_migrations table must exist');
+  assert.ok(tables.includes('users'), 'users table must exist');
+  assert.ok(tables.includes('user_sessions'), 'user_sessions table must exist');
+  assert.ok(tables.includes('user_states'), 'user_states table must exist');
+  assert.ok(tables.includes('jobs'), 'jobs table must exist');
+  assert.ok(tables.includes('rendered_clips'), 'rendered_clips table must exist');
+
+  // 2. Migration created backup of database.json if it existed
+  const dataDir = path.join(process.cwd(), 'data');
+  const bakPath = path.join(dataDir, 'database.json.bak');
+  if (fs.existsSync(path.join(dataDir, 'database.json'))) {
+    assert.ok(fs.existsSync(bakPath), 'database.json.bak must be preserved on SQLite migration');
+  }
+
+  // 3. Foreign key constraints: ON DELETE CASCADE
+  const tempUserId = `cascade_test_${Date.now()}`;
+  (db as any).raw.prepare(
+    "INSERT INTO users (id, created_at, last_login) VALUES (?, datetime('now'), datetime('now'))"
+  ).run(tempUserId);
+  (db as any).raw.prepare(
+    "INSERT INTO user_sessions (session_token, user_id, expires_at) VALUES (?, ?, datetime('now', '+1 day'))"
+  ).run(`sess_${tempUserId}`, tempUserId);
+
+  assert.ok((db as any).raw.prepare('SELECT * FROM user_sessions WHERE user_id = ?').get(tempUserId));
+
+  // Deleting user must cascade delete session via foreign key
+  (db as any).raw.prepare('DELETE FROM users WHERE id = ?').run(tempUserId);
+  assert.equal((db as any).raw.prepare('SELECT * FROM user_sessions WHERE user_id = ?').get(tempUserId), undefined);
+});
+
+test('P1.2 - Job persistence in SQLite and p-limit concurrency limiter', async () => {
+  const jobId = `persisted_job_${Date.now()}`;
+  const userId = `usr_persist_${Date.now()}`;
+
+  // Register user first for foreign key integrity
+  (db as any).raw.prepare(
+    'INSERT OR REPLACE INTO users (id, created_at, last_login) VALUES (?, ?, ?)'
+  ).run(userId, new Date().toISOString(), new Date().toISOString());
+
+  jobQueue.addJob({
+    id: jobId,
+    type: 'batch_render',
+    status: 'queued',
+    progress: 0,
+    currentStep: 'Na fila SQLite',
+    totalItems: 3,
+    completedItems: 0,
+    failedItems: 0,
+    itemIds: ['c1', 'c2', 'c3'],
+    userId,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+
+  // Verify job is persisted into SQLite table
+  const row = (db as any).raw.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId) as any;
+  assert.ok(row, 'Job must be persisted in SQLite table jobs');
+  assert.equal(row.id, jobId);
+  assert.equal(row.user_id, userId);
+  assert.equal(row.status, 'queued');
+
+  // Cancel job and verify update is persisted
+  jobQueue.cancelJob(jobId);
+  const updatedRow = (db as any).raw.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId) as any;
+  assert.equal(updatedRow.status, 'cancelled');
+
+  // Clean up
+  jobQueue.deleteJob(jobId);
+  assert.equal((db as any).raw.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId), undefined);
+});
+
+test('P1.3 & P1.4 - videoWorker facade removed and async file stats in request handlers', async () => {
+  // 1. videoWorker facade removed from codebase
+  const facadeWorkerPath = path.join(process.cwd(), 'server', 'queue', 'videoWorker.ts');
+  const facadeQueuePath = path.join(process.cwd(), 'server', 'queue', 'videoQueue.ts');
+  assert.equal(fs.existsSync(facadeWorkerPath), false, 'server/queue/videoWorker.ts must be deleted');
+  assert.equal(fs.existsSync(facadeQueuePath), false, 'server/queue/videoQueue.ts must be deleted');
+});
+

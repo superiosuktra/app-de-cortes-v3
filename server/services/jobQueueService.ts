@@ -1,11 +1,16 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import pLimit from 'p-limit';
 import { DATA_DIR, CLIPS_DIR, TEMP_DIR } from '../config.js';
 import { renderClip, validateMediaFile } from './renderService.js';
 import { createBatchZipArchive } from './zipService.js';
 import { ViralCut, BatchRenderJob } from '../../src/types.js';
 import { validateCutInterval } from '../middleware/security.js';
+import db from '../db.js';
+
+const createPLimit = (pLimit as any).default || pLimit;
+export const ffmpegConcurrencyLimit = createPLimit(Number(process.env.MAX_CONCURRENT_FFMPEG) || 2);
 
 export interface RenderJobTask {
   id: string;
@@ -45,16 +50,89 @@ class JobQueueService {
 
   constructor() {
     this.loadClipsMetadata();
+    this.loadJobsFromDb();
+  }
+
+  private loadJobsFromDb() {
+    try {
+      const rows = db.prepare('SELECT * FROM jobs ORDER BY created_at DESC LIMIT 100').all() as any[];
+      for (const r of rows) {
+        this.jobs.set(r.id, {
+          id: r.id,
+          type: r.type,
+          status: r.status === 'rendering' || r.status === 'queued' ? 'failed' : r.status,
+          progress: r.progress || 0,
+          currentStep: r.current_step || '',
+          totalItems: r.total_items || 0,
+          completedItems: r.completed_items || 0,
+          failedItems: r.failed_items || 0,
+          itemIds: r.item_ids_json ? JSON.parse(r.item_ids_json) : [],
+          clipData: r.clip_data_json ? JSON.parse(r.clip_data_json) : {},
+          error: r.error || undefined,
+          zipDownloadUrl: r.zip_download_url || undefined,
+          userId: r.user_id,
+          createdAt: r.created_at,
+          updatedAt: r.updated_at,
+        });
+      }
+    } catch (e) {
+      console.warn('[JobQueue] Falha ao carregar jobs do SQLite:', e);
+    }
+  }
+
+  public persistJob(job: RenderJobTask) {
+    try {
+      db.prepare(`
+        INSERT OR REPLACE INTO jobs (
+          id, user_id, type, status, progress, current_step,
+          total_items, completed_items, failed_items, item_ids_json,
+          clip_data_json, error, zip_download_url, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        job.id,
+        job.userId || 'anonymous',
+        job.type,
+        job.status,
+        job.progress,
+        job.currentStep,
+        job.totalItems,
+        job.completedItems,
+        job.failedItems,
+        JSON.stringify(job.itemIds || []),
+        JSON.stringify(job.clipData || {}),
+        job.error || null,
+        job.zipDownloadUrl || null,
+        job.createdAt,
+        job.updatedAt
+      );
+    } catch (e) {
+      console.warn('[JobQueue] Falha ao salvar job no SQLite:', e);
+    }
   }
 
   private loadClipsMetadata() {
     try {
+      // 1. From SQLite rendered_clips table
+      const rows = db.prepare('SELECT clip_id, user_id, file_path, duration, file_size, created_at FROM rendered_clips').all() as any[];
+      for (const r of rows) {
+        this.clipMetadata.set(r.clip_id, {
+          filePath: r.file_path,
+          duration: r.duration,
+          fileSize: r.file_size,
+          createdAt: r.created_at,
+          userId: r.user_id,
+        });
+      }
+
+      // 2. From fallback legacy json if present
       if (fs.existsSync(CLIPS_METADATA_FILE)) {
         const raw = fs.readFileSync(CLIPS_METADATA_FILE, 'utf-8');
         const parsed = JSON.parse(raw);
         if (parsed && typeof parsed === 'object') {
           for (const [k, v] of Object.entries(parsed)) {
-            this.clipMetadata.set(k, v as any);
+            if (!this.clipMetadata.has(k)) {
+              this.clipMetadata.set(k, v as any);
+            }
           }
         }
       }
@@ -76,14 +154,21 @@ class JobQueueService {
   }
 
   public registerRenderedClip(clipId: string, filePath: string, duration: number, fileSize: number, userId?: string) {
-    this.clipMetadata.set(clipId, {
+    const entry = {
       filePath,
       duration,
       fileSize,
       createdAt: new Date().toISOString(),
       userId,
-    });
+    };
+    this.clipMetadata.set(clipId, entry);
     this.saveClipsMetadata();
+    try {
+      db.prepare(`
+        INSERT OR REPLACE INTO rendered_clips (clip_id, user_id, file_path, duration, file_size, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(clipId, userId || null, filePath, duration, fileSize, entry.createdAt);
+    } catch {}
   }
 
   public getRenderedClip(clipId: string) {
@@ -105,17 +190,20 @@ class JobQueueService {
     job.status = 'cancelled';
     job.currentStep = 'Cancelado pelo usuário';
     job.updatedAt = new Date().toISOString();
+    this.persistJob(job);
     return true;
   }
 
   public addJob(job: RenderJobTask) {
     this.jobs.set(job.id, job);
+    this.persistJob(job);
   }
 
   public updateJob(jobId: string, updates: Partial<RenderJobTask>) {
     const job = this.jobs.get(jobId);
     if (job) {
       Object.assign(job, updates, { updatedAt: new Date().toISOString() });
+      this.persistJob(job);
     }
   }
 
@@ -209,40 +297,64 @@ class JobQueueService {
         progress: Math.floor((idx / total) * 100),
       });
 
-      try {
-        const outPath = path.join(CLIPS_DIR, `${cut.id}.mp4`);
-        const result = await renderClip({
-          sourcePath: sourceVideoPath,
-          startTime: cut.startTime,
-          endTime: cut.endTime,
-          clipId: cut.id,
-          outputPath: outPath,
-          format: cut.recommendedFormat || 'speaker_center',
-          subtitleTheme: cut.subtitleTheme || 'none',
-          overlayTitle: cut.title,
-          hook: cut.hook,
-          framing: cut.framing as any,
-          subtitles: cut.overlaySubtitlesSample,
-          removeSilence: Boolean(cut.removeSilence),
-        });
+      const outPath = path.join(CLIPS_DIR, `${cut.id}.mp4`);
+      await ffmpegConcurrencyLimit(async () => {
+        if (job.isCancelled) return;
+        try {
+          const renderPromise = renderClip({
+            sourcePath: sourceVideoPath,
+            startTime: cut.startTime,
+            endTime: cut.endTime,
+            clipId: cut.id,
+            outputPath: outPath,
+            format: cut.recommendedFormat || 'speaker_center',
+            subtitleTheme: cut.subtitleTheme || 'none',
+            overlayTitle: cut.title,
+            hook: cut.hook,
+            framing: cut.framing as any,
+            subtitles: cut.overlaySubtitlesSample,
+            removeSilence: Boolean(cut.removeSilence),
+          });
 
-        this.registerRenderedClip(cut.id, result.outputPath, result.duration, result.fileSize, job.userId);
+          let timeoutTimer: NodeJS.Timeout;
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            timeoutTimer = setTimeout(() => {
+              reject(new Error(`Timeout na renderização do corte ${cut.id} (300s)`));
+            }, 300_000);
+          });
 
-        completed++;
-        job.clipData = job.clipData || {};
-        job.clipData[cut.id] = {
-          previewUrl: `/api/clips/${cut.id}/preview`,
-          downloadUrl: `/api/clips/${cut.id}/download`,
-          fileSize: result.fileSize,
-        };
-      } catch (renderErr: any) {
-        console.error(`[JobQueue] Falha no corte ${cut.id}:`, renderErr?.message || renderErr);
-        failed++;
-        job.clipData = job.clipData || {};
-        job.clipData[cut.id] = {
-          error: renderErr?.message || 'Falha na renderização FFmpeg',
-        };
-      }
+          const result = await Promise.race([renderPromise, timeoutPromise]).finally(() => {
+            clearTimeout(timeoutTimer);
+          });
+
+          if (job.isCancelled) {
+            if (fs.existsSync(outPath)) {
+              try { fs.unlinkSync(outPath); } catch {}
+            }
+            return;
+          }
+
+          this.registerRenderedClip(cut.id, result.outputPath, result.duration, result.fileSize, job.userId);
+
+          completed++;
+          job.clipData = job.clipData || {};
+          job.clipData[cut.id] = {
+            previewUrl: `/api/clips/${cut.id}/preview`,
+            downloadUrl: `/api/clips/${cut.id}/download`,
+            fileSize: result.fileSize,
+          };
+        } catch (renderErr: any) {
+          console.error(`[JobQueue] Falha no corte ${cut.id}:`, renderErr?.message || renderErr);
+          if (fs.existsSync(outPath)) {
+            try { fs.unlinkSync(outPath); } catch {}
+          }
+          failed++;
+          job.clipData = job.clipData || {};
+          job.clipData[cut.id] = {
+            error: renderErr?.message || 'Falha na renderização FFmpeg',
+          };
+        }
+      });
 
       this.updateJob(jobId, {
         completedItems: completed,
@@ -318,6 +430,9 @@ class JobQueueService {
   }
 
   public deleteJob(jobId: string): boolean {
+    try {
+      db.prepare('DELETE FROM jobs WHERE id = ?').run(jobId);
+    } catch {}
     return this.jobs.delete(jobId);
   }
 

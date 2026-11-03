@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import db from '../db.js';
+import db, { hashSessionToken } from '../db.js';
 import { parseCookies } from './security.js';
 
 export interface AuthenticatedUser {
@@ -65,9 +65,10 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
 
   if (token) {
     try {
+      const hashed = hashSessionToken(token);
       const session = db
-        .prepare('SELECT user_id, session_token, expires_at, created_at FROM user_sessions WHERE session_token = ?')
-        .get(token) as any;
+        .prepare('SELECT user_id, session_token, expires_at, created_at FROM user_sessions WHERE session_token = ? OR session_token = ?')
+        .get(hashed, token) as any;
 
       if (session) {
         // Validate expiration
@@ -75,7 +76,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
         if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) {
           // Session expired -> delete and do not authenticate
           try {
-            db.prepare('DELETE FROM user_sessions WHERE session_token = ?').run(token);
+            db.prepare('DELETE FROM user_sessions WHERE session_token = ? OR session_token = ?').run(token, hashed);
           } catch {}
         } else {
           // Find user by user_id

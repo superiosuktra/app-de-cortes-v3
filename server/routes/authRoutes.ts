@@ -291,10 +291,17 @@ authRouter.get('/auth/google/callback', async (req: Request, res: Response) => {
     const userId = existingUser?.id || `usr_${crypto.randomUUID()}`;
 
     // Upsert into users table
-    db.prepare(`
-      INSERT INTO users (id, google_id, email, name, picture, last_login)
-      VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    `).run(userId, googleId, verifiedEmail, name, picture);
+    if (existingUser) {
+      db.prepare(`
+        UPDATE users SET google_id = ?, email = ?, name = ?, picture = ?, last_login = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(googleId, verifiedEmail, name, picture, existingUser.id);
+    } else {
+      db.prepare(`
+        INSERT INTO users (id, google_id, email, name, picture, last_login)
+        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      `).run(userId, googleId, verifiedEmail, name, picture);
+    }
 
     // Save YouTube credentials isolated to this user's account
     stateManager.updateCredentials(
