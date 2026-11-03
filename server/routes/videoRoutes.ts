@@ -13,7 +13,13 @@ import {
 } from '../services/geminiService.js';
 import { stateManager } from '../services/stateService.js';
 import { generateFfmpegCommand } from '../services/ffmpegService.js';
-import { createRateLimiter, normalizeSafeYouTubeUrl, sanitizeTimestamp } from '../middleware/security.js';
+import {
+  createRateLimiter,
+  normalizeSafeYouTubeUrl,
+  sanitizeTimestamp,
+  assertSafeOutboundUrl,
+  safeFetch,
+} from '../middleware/security.js';
 
 export const videoRouter = Router();
 
@@ -21,6 +27,7 @@ const aiRateLimiter = createRateLimiter({
   windowMs: 60 * 1000,
   maxRequests: 25,
   scope: 'ai-analysis',
+  byUser: true,
   message: 'Limite de análises de IA por minuto atingido. Aguarde alguns segundos.',
 });
 
@@ -251,9 +258,12 @@ videoRouter.post('/gemini/verify', async (req: Request, res: Response) => {
 
 // 8. Get Google AI Studio Status
 videoRouter.get('/gemini/status', (req: Request, res: Response) => {
+  if (!req.userId) {
+    return res.status(401).json({ error: 'Acesso não autorizado.' });
+  }
   const activeKey = resolveGeminiApiKey(req.userId);
   const hasKey = Boolean(activeKey);
-  const creds = stateManager.getCredentials(req.userId || 'default');
+  const creds = stateManager.getCredentials(req.userId);
   res.json({
     configured: hasKey,
     model: GEMINI_TEXT_MODEL,
@@ -274,35 +284,9 @@ videoRouter.post('/ai/test-local', async (req: Request, res: Response) => {
   // Validate URL and enforce SSRF defenses
   let parsedUrl: URL;
   try {
-    parsedUrl = new URL(rawEndpoint);
-  } catch {
-    return res.status(400).json({ success: false, error: 'URL do endpoint inválida.' });
-  }
-
-  if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-    return res.status(400).json({ success: false, error: 'Protocolo inválido. Apenas http e https são permitidos.' });
-  }
-
-  const hostname = parsedUrl.hostname.toLowerCase();
-  const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
-
-  if (process.env.NODE_ENV === 'production') {
-    // In production, block loopback, link-local, private subnets, and cloud metadata
-    if (
-      isLocalhost ||
-      hostname.startsWith('10.') ||
-      hostname.startsWith('192.168.') ||
-      hostname.startsWith('172.') ||
-      hostname.startsWith('169.254.') ||
-      hostname.includes('metadata')
-    ) {
-      return res.status(400).json({ success: false, error: 'Conexões para endereços de rede privada ou metadados são proibidas.' });
-    }
-  } else {
-    // In dev, only permit loopback connections
-    if (!isLocalhost) {
-      return res.status(400).json({ success: false, error: 'Em ambiente local, apenas conexões para localhost ou 127.0.0.1 são permitidas.' });
-    }
+    parsedUrl = await assertSafeOutboundUrl(rawEndpoint);
+  } catch (err: any) {
+    return res.status(400).json({ success: false, error: err?.message || 'Endpoint inválido ou bloqueado por segurança (SSRF).' });
   }
 
   const startTime = Date.now();
@@ -310,7 +294,7 @@ videoRouter.post('/ai/test-local', async (req: Request, res: Response) => {
   const timeoutId = setTimeout(() => controller.abort(), 4000);
 
   try {
-    const tagsRes = await fetch(`${parsedUrl.origin}/api/tags`, {
+    const tagsRes = await safeFetch(`${parsedUrl.origin}/api/tags`, {
       method: 'GET',
       signal: controller.signal,
     });

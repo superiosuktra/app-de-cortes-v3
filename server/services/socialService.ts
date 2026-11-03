@@ -1,13 +1,14 @@
 import { stateManager } from './stateService.js';
+import { assertSafeOutboundUrl, safeFetch } from '../middleware/security.js';
 
 /**
  * Verify Instagram Graph API Token
  */
-export async function verifyInstagramToken(token: string, userId: string = 'default') {
-  const serverCreds = stateManager.getCredentials(userId);
+export async function verifyInstagramToken(token: string, userId?: string) {
+  const serverCreds = userId ? stateManager.getCredentials(userId) : null;
   const rawToken = (token || '').trim();
   const isMasked = !rawToken || rawToken.startsWith('***') || rawToken.includes('••••');
-  const cleanToken = isMasked ? (serverCreds.instagram.accessToken || '').trim() : rawToken;
+  const cleanToken = isMasked ? (serverCreds?.instagram.accessToken || '').trim() : rawToken;
   if (!cleanToken) {
     return { valid: false, error: 'Token não fornecido.' };
   }
@@ -37,20 +38,22 @@ export async function verifyInstagramToken(token: string, userId: string = 'defa
 
   if (igAccount) {
     const accountName = `@${igAccount.username}`;
-    stateManager.updateCredentials(
-      {
-        instagram: {
-          ...serverCreds.instagram,
-          accessToken: cleanToken,
-          status: 'connected',
-          businessAccountId: igAccount.id,
-          accountName,
-          avatar: igAccount.profile_picture_url,
-          verifiedAt: new Date().toLocaleTimeString('pt-BR'),
+    if (userId) {
+      stateManager.updateCredentials(
+        {
+          instagram: {
+            ...serverCreds?.instagram,
+            accessToken: cleanToken,
+            status: 'connected',
+            businessAccountId: igAccount.id,
+            accountName,
+            avatar: igAccount.profile_picture_url,
+            verifiedAt: new Date().toLocaleTimeString('pt-BR'),
+          },
         },
-      },
-      userId
-    );
+        userId
+      );
+    }
 
     return {
       valid: true,
@@ -71,11 +74,11 @@ export async function verifyInstagramToken(token: string, userId: string = 'defa
 /**
  * Verify TikTok Content Posting API Token
  */
-export async function verifyTikTokToken(token: string, userId: string = 'default') {
-  const serverCreds = stateManager.getCredentials(userId);
+export async function verifyTikTokToken(token: string, userId?: string) {
+  const serverCreds = userId ? stateManager.getCredentials(userId) : null;
   const rawToken = (token || '').trim();
   const isMasked = !rawToken || rawToken.startsWith('***') || rawToken.includes('••••');
-  const cleanToken = isMasked ? (serverCreds.tiktok.accessToken || '').trim() : rawToken;
+  const cleanToken = isMasked ? (serverCreds?.tiktok.accessToken || '').trim() : rawToken;
   if (!cleanToken) {
     return { valid: false, error: 'Token não fornecido.' };
   }
@@ -101,19 +104,21 @@ export async function verifyTikTokToken(token: string, userId: string = 'default
   const user = data.data?.user;
   const displayName = user?.display_name || 'Conta TikTok';
 
-  stateManager.updateCredentials(
-    {
-      tiktok: {
-        ...serverCreds.tiktok,
-        accessToken: cleanToken,
-        status: 'connected',
-        displayName,
-        avatar: user?.avatar_url,
-        verifiedAt: new Date().toLocaleTimeString('pt-BR'),
+  if (userId) {
+    stateManager.updateCredentials(
+      {
+        tiktok: {
+          ...serverCreds?.tiktok,
+          accessToken: cleanToken,
+          status: 'connected',
+          displayName,
+          avatar: user?.avatar_url,
+          verifiedAt: new Date().toLocaleTimeString('pt-BR'),
+        },
       },
-    },
-    userId
-  );
+      userId
+    );
+  }
 
   return {
     valid: true,
@@ -335,7 +340,7 @@ export async function sendWebhookNotification({
   platform,
   account,
   duration,
-  userId = 'default',
+  userId,
 }: {
   type: 'post_success' | 'cut_ready' | 'test';
   title: string;
@@ -345,7 +350,7 @@ export async function sendWebhookNotification({
   duration?: number;
   userId?: string;
 }) {
-  const creds = stateManager.getCredentials(userId) as any;
+  const creds = userId ? (stateManager.getCredentials(userId) as any) : null;
   const webhooks = creds?.webhooks || {};
 
   const results: { platform: string; success: boolean; error?: string }[] = [];
@@ -375,7 +380,8 @@ export async function sendWebhookNotification({
         ],
       };
 
-      const res = await fetch(webhooks.discordWebhookUrl, {
+      await assertSafeOutboundUrl(webhooks.discordWebhookUrl);
+      const res = await safeFetch(webhooks.discordWebhookUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -399,7 +405,8 @@ export async function sendWebhookNotification({
         (videoUrl ? `• Link: ${videoUrl}\n` : '');
 
       const tgUrl = `https://api.telegram.org/bot${webhooks.telegramBotToken}/sendMessage`;
-      const res = await fetch(tgUrl, {
+      await assertSafeOutboundUrl(tgUrl);
+      const res = await safeFetch(tgUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -420,11 +427,11 @@ export async function sendWebhookNotification({
 /**
  * Verify Kwai Open Platform Token
  */
-export async function verifyKwaiToken(token: string, userId: string = 'default') {
-  const serverCreds = stateManager.getCredentials(userId);
+export async function verifyKwaiToken(token: string, userId?: string) {
+  const serverCreds = userId ? stateManager.getCredentials(userId) : null;
   const rawToken = (token || '').trim();
   const isMasked = !rawToken || rawToken.startsWith('***') || rawToken.includes('••••');
-  const cleanToken = isMasked ? (serverCreds.kwai?.accessToken || '').trim() : rawToken;
+  const cleanToken = isMasked ? (serverCreds?.kwai?.accessToken || '').trim() : rawToken;
   if (!cleanToken) {
     return { valid: false, error: 'Token do Kwai não fornecido.' };
   }
@@ -437,17 +444,19 @@ export async function verifyKwaiToken(token: string, userId: string = 'default')
     cleanToken === 'kwai-bypass-active'
   ) {
     const accountName = '@kwai_criador_pro';
-    stateManager.updateCredentials(
-      {
-        kwai: {
-          accessToken: cleanToken,
-          status: 'connected',
-          accountName,
-          verifiedAt: new Date().toLocaleTimeString('pt-BR'),
+    if (userId) {
+      stateManager.updateCredentials(
+        {
+          kwai: {
+            accessToken: cleanToken,
+            status: 'connected',
+            accountName,
+            verifiedAt: new Date().toLocaleTimeString('pt-BR'),
+          },
         },
-      },
-      userId
-    );
+        userId
+      );
+    }
     return {
       valid: true,
       accountName,
@@ -474,18 +483,20 @@ export async function verifyKwaiToken(token: string, userId: string = 'default')
     const data = await response.json();
     const accountName = data?.name || data?.user_name || '@criador_kwai';
 
-    stateManager.updateCredentials(
-      {
-        kwai: {
-          accessToken: cleanToken,
-          status: 'connected',
-          accountName,
-          avatar: data?.avatar || data?.head_url,
-          verifiedAt: new Date().toLocaleTimeString('pt-BR'),
+    if (userId) {
+      stateManager.updateCredentials(
+        {
+          kwai: {
+            accessToken: cleanToken,
+            status: 'connected',
+            accountName,
+            avatar: data?.avatar || data?.head_url,
+            verifiedAt: new Date().toLocaleTimeString('pt-BR'),
+          },
         },
-      },
-      userId
-    );
+        userId
+      );
+    }
 
     return {
       valid: true,

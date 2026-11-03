@@ -1,5 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import path from 'path';
+import dns from 'dns';
+import net from 'net';
 
 /**
  * 1. HTTP Security Headers Middleware (CSP, Anti-Clickjacking, Nosniff)
@@ -346,6 +348,80 @@ export function parseHttpRange(
   return { valid: true, start, end, chunkSize: end - start + 1 };
 }
 
+export function isPrivateIp(ip: string): boolean {
+  let clean = ip.toLowerCase().replace(/^[\[]|[\]]$/g, '').trim();
+
+  // Handle decimal IP (e.g. 2130706433 -> 127.0.0.1)
+  if (/^\d+$/.test(clean)) {
+    const n = Number(clean);
+    if (Number.isFinite(n) && n >= 0 && n <= 0xffffffff) {
+      clean = `${(n >>> 24) & 0xff}.${(n >>> 16) & 0xff}.${(n >>> 8) & 0xff}.${n & 0xff}`;
+    }
+  }
+
+  // Handle hex IP (e.g. 0x7f000001 -> 127.0.0.1)
+  if (/^0x[0-9a-f]+$/i.test(clean)) {
+    const n = parseInt(clean, 16);
+    if (Number.isFinite(n) && n >= 0 && n <= 0xffffffff) {
+      clean = `${(n >>> 24) & 0xff}.${(n >>> 16) & 0xff}.${(n >>> 8) & 0xff}.${n & 0xff}`;
+    }
+  }
+
+  // IPv4-mapped IPv6 like ::ffff:127.0.0.1 or ::ffff:7f00:1
+  if (clean.startsWith('::ffff:')) {
+    const mapped = clean.slice(7);
+    if (net.isIPv4(mapped)) {
+      return isPrivateIp(mapped);
+    }
+    const parts = mapped.split(':');
+    if (parts.length === 2 && /^[0-9a-f]{1,4}$/i.test(parts[0]) && /^[0-9a-f]{1,4}$/i.test(parts[1])) {
+      const num1 = parseInt(parts[0], 16);
+      const num2 = parseInt(parts[1], 16);
+      const b0 = (num1 >> 8) & 0xff;
+      const b1 = num1 & 0xff;
+      const b2 = (num2 >> 8) & 0xff;
+      const b3 = num2 & 0xff;
+      return isPrivateIp(`${b0}.${b1}.${b2}.${b3}`);
+    }
+  }
+
+  // Check IPv4
+  if (net.isIPv4(clean)) {
+    const parts = clean.split('.').map((p) => parseInt(p, 10));
+    const [b0, b1] = parts;
+    if (b0 === 127) return true; // 127.0.0.0/8 loopback
+    if (b0 === 10) return true; // 10.0.0.0/8 private
+    if (b0 === 192 && b1 === 168) return true; // 192.168.0.0/16 private
+    if (b0 === 172 && b1 >= 16 && b1 <= 31) return true; // 172.16.0.0/12 private
+    if (b0 === 169 && b1 === 254) return true; // 169.254.0.0/16 link-local / cloud metadata
+    if (b0 === 0) return true; // 0.0.0.0/8 current network
+    if (b0 === 100 && b1 >= 64 && b1 <= 127) return true; // Carrier-grade NAT 100.64.0.0/10
+    if (b0 >= 224) return true; // Multicast & broadcast
+    return false;
+  }
+
+  // Check IPv6
+  if (net.isIPv6(clean)) {
+    if (clean === '::1' || clean === '::' || clean === '0:0:0:0:0:0:0:1' || clean === '0:0:0:0:0:0:0:0') return true;
+    if (clean.startsWith('fc') || clean.startsWith('fd')) return true; // Unique Local Address fc00::/7
+    if (clean.startsWith('fe80:')) return true; // Link-Local fe80::/10
+    return false;
+  }
+
+  // Hostnames & domains
+  if (
+    clean === 'localhost' ||
+    clean.includes('meta-data') ||
+    clean.includes('metadata') ||
+    clean.endsWith('.internal') ||
+    clean.endsWith('.local')
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 export async function assertSafeOutboundUrl(
   urlStr: string,
   options?: { lookupFn?: (host: string) => Promise<Array<{ address: string; family: number }>> }
@@ -361,48 +437,69 @@ export async function assertSafeOutboundUrl(
     throw new Error(`Protocolo inseguro: ${parsed.protocol}. Apenas protocolos permitidos (http/https).`);
   }
 
-  const isPrivate = (host: string) => {
-    const clean = host.toLowerCase().replace(/^[\[]|[\]]$/g, '');
-    if (
-      clean === 'localhost' ||
-      clean === '127.0.0.1' ||
-      clean === '0.0.0.0' ||
-      clean === '::1' ||
-      clean.startsWith('127.') ||
-      clean.startsWith('10.') ||
-      clean.startsWith('192.168.') ||
-      clean.startsWith('169.254.') ||
-      clean.startsWith('::ffff:') ||
-      clean.startsWith('fc00:') ||
-      clean.startsWith('fd00:') ||
-      clean.startsWith('fe80:') ||
-      clean.includes('meta-data') ||
-      clean.includes('metadata') ||
-      clean.endsWith('.internal')
-    ) {
-      return true;
-    }
-    if (/^172\.(1[6-9]|2\d|3[01])\./.test(clean)) {
-      return true;
-    }
-    return false;
-  };
-
   const cleanHost = parsed.hostname.toLowerCase().replace(/^[\[]|[\]]$/g, '');
-  if (isPrivate(cleanHost)) {
+  if (isPrivateIp(cleanHost)) {
     throw new Error(`SSRF bloqueado: endereço de rede privada ou local (${cleanHost})`);
   }
 
-  if (options?.lookupFn) {
-    const resolved = await options.lookupFn(parsed.hostname);
+  // Resolve DNS to verify all destination IPs
+  const lookup = options?.lookupFn || (async (h: string) => {
+    try {
+      const records = await dns.promises.lookup(h, { all: true });
+      return records;
+    } catch {
+      throw new Error(`Falha na resolução de DNS para ${h}`);
+    }
+  });
+
+  if (!net.isIP(cleanHost)) {
+    const resolved = await lookup(cleanHost);
     for (const r of resolved) {
-      if (isPrivate(r.address)) {
+      if (isPrivateIp(r.address)) {
         throw new Error(`SSRF bloqueado: DNS resolveu para endereço privado (${r.address})`);
       }
     }
   }
 
   return parsed;
+}
+
+/**
+ * Safe fetch wrapper that enforces assertSafeOutboundUrl on every redirect hop
+ */
+export async function safeFetch(
+  urlInput: string | URL,
+  init?: RequestInit,
+  maxRedirects = 3
+): Promise<globalThis.Response> {
+  let currentUrl = typeof urlInput === 'string' ? urlInput : urlInput.toString();
+  let redirectsRemaining = maxRedirects;
+
+  while (true) {
+    await assertSafeOutboundUrl(currentUrl);
+
+    const res = await fetch(currentUrl, {
+      ...init,
+      redirect: 'manual',
+    });
+
+    if ([301, 302, 303, 307, 308].includes(res.status)) {
+      const location = res.headers.get('location');
+      if (!location) {
+        return res;
+      }
+      if (redirectsRemaining <= 0) {
+        throw new Error('SSRF bloqueado: excesso de redirecionamentos.');
+      }
+      redirectsRemaining--;
+      const nextUrl = new URL(location, currentUrl).toString();
+      await assertSafeOutboundUrl(nextUrl);
+      currentUrl = nextUrl;
+      continue;
+    }
+
+    return res;
+  }
 }
 
 /**

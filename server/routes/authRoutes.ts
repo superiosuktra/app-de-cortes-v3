@@ -65,11 +65,12 @@ authRouter.get('/auth/me', (req: Request, res: Response) => {
   });
 });
 
-// 2. Demo Login (ONLY permitted in non-production environments)
+// 2. Demo Login (ONLY permitted when ENABLE_DEMO_LOGIN=true and non-production)
 authRouter.post('/auth/demo-login', (req: Request, res: Response) => {
-  if (process.env.NODE_ENV === 'production') {
+  if (process.env.NODE_ENV === 'production' || process.env.ENABLE_DEMO_LOGIN !== 'true') {
     return res.status(403).json({
-      error: 'Modo demonstração desabilitado em ambiente de produção.',
+      error: 'Modo demonstração desabilitado.',
+      code: 'DEMO_LOGIN_DISABLED',
     });
   }
 
@@ -88,6 +89,12 @@ authRouter.post('/auth/demo-login', (req: Request, res: Response) => {
     // Create session token
     const sessionToken = `demo_tok_${crypto.randomUUID()}`;
     db.createSession(demoId, sessionToken, Date.now() + 30 * 24 * 3600 * 1000);
+
+    const csrfToken = crypto.randomBytes(24).toString('hex');
+    res.setHeader('Set-Cookie', [
+      `session_token=${sessionToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 24 * 3600}${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`,
+      `csrf_token=${csrfToken}; Path=/; SameSite=Lax; Max-Age=${30 * 24 * 3600}${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`,
+    ]);
 
     const userObj = {
       id: demoId,
@@ -311,58 +318,13 @@ authRouter.get('/auth/google/callback', async (req: Request, res: Response) => {
     const sessionToken = crypto.randomBytes(32).toString('hex');
     db.createSession(userId, sessionToken, Date.now() + 30 * 24 * 3600 * 1000);
 
-    const userPayload = {
-      id: userId,
-      email: verifiedEmail,
-      name,
-      picture,
-    };
+    const csrfToken = crypto.randomBytes(24).toString('hex');
+    res.setHeader('Set-Cookie', [
+      `session_token=${sessionToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 24 * 3600}${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`,
+      `csrf_token=${csrfToken}; Path=/; SameSite=Lax; Max-Age=${30 * 24 * 3600}${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`,
+    ]);
 
-    return res.send(`
-      <!DOCTYPE html>
-      <html lang="pt-BR">
-        <head>
-          <meta charset="utf-8" />
-          <title>Autenticado com Sucesso</title>
-        </head>
-        <body style="background:#0f101a;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
-          <div style="text-align:center;max-width:420px;padding:28px;background:#161827;border-radius:20px;border:1px solid #10b981;">
-            <h2 style="color:#34d399;margin:0 0 8px;">Bem-vindo(a), ${escapeHtml(name)}!</h2>
-            <p style="font-size:14px;color:#d4d4d8;margin-bottom:6px;">
-              Sua conta Google <strong>${escapeHtml(verifiedEmail)}</strong> foi vinculada com sucesso.
-            </p>
-            <p style="font-size:12px;color:#71717a;">Fechando janela e conectando ao estúdio...</p>
-          </div>
-          <script>
-            try {
-              localStorage.setItem('app_session_token', ${safeJsonScript(sessionToken)});
-            } catch (e) {}
-
-            if (window.opener) {
-              window.opener.postMessage({
-                type: 'GOOGLE_AUTH_SUCCESS',
-                success: true,
-                token: ${safeJsonScript(sessionToken)},
-                user: ${safeJsonScript(userPayload)},
-                message: 'Conectado com sucesso!'
-              }, window.location.origin);
-
-              window.opener.postMessage({
-                type: 'GOOGLE_OAUTH_SUCCESS',
-                success: true,
-                token: ${safeJsonScript(sessionToken)},
-                user: ${safeJsonScript(userPayload)},
-                message: 'Canal conectado com sucesso!'
-              }, window.location.origin);
-
-              setTimeout(() => window.close(), 800);
-            } else {
-              window.location.href = '/';
-            }
-          </script>
-        </body>
-      </html>
-    `);
+    return res.redirect(302, '/?auth=success');
   } catch (err: any) {
     console.error('[AuthRoutes] Erro no callback do Google OAuth:', err);
     return res.status(500).send(`
@@ -388,6 +350,11 @@ authRouter.post('/auth/logout', (req: Request, res: Response) => {
     token = authHeader.slice(7).trim();
   } else if (typeof req.headers['x-session-token'] === 'string') {
     token = req.headers['x-session-token'].trim();
+  } else if (req.headers.cookie) {
+    const cookies = parseCookies(req.headers.cookie);
+    if (cookies.session_token) {
+      token = cookies.session_token.trim();
+    }
   }
 
   if (token) {
@@ -395,6 +362,11 @@ authRouter.post('/auth/logout', (req: Request, res: Response) => {
       db.prepare('DELETE FROM user_sessions WHERE session_token = ?').run(token);
     } catch {}
   }
+
+  res.setHeader('Set-Cookie', [
+    `session_token=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`,
+    `csrf_token=; Path=/; SameSite=Lax; Max-Age=0${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`,
+  ]);
 
   res.json({ success: true, message: 'Sessão encerrada com sucesso.' });
 });

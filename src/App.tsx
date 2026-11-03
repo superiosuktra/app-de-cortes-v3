@@ -373,13 +373,16 @@ export default function App() {
 
   // 1. Check active user session on startup
   useEffect(() => {
+    // Detect return from OAuth popup redirect
+    if (typeof window !== 'undefined' && window.opener && window.location.search.includes('auth=success')) {
+      try {
+        window.opener.postMessage({ type: 'GOOGLE_AUTH_SUCCESS' }, window.location.origin);
+      } catch {}
+      window.close();
+      return;
+    }
+
     const checkAuth = async () => {
-      const token = getAuthToken();
-      if (!token) {
-        setCurrentUser(null);
-        setIsCheckingAuth(false);
-        return;
-      }
       try {
         const res = await fetchJson<{ authenticated: boolean; user: AuthUser | null }>('/api/auth/me');
         if (res.ok && res.data.authenticated && res.data.user) {

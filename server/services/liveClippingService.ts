@@ -136,7 +136,7 @@ class LiveClippingManager {
   /**
    * Simulates/Triggers Live Stream Finish & Auto-Clipper
    */
-  public async triggerStreamFinished(channelId: string, userId: string = 'default'): Promise<{
+  public async triggerStreamFinished(channelId: string, userId: string): Promise<{
     success: boolean;
     channel: LiveStreamChannel;
     cuts: ViralCut[];

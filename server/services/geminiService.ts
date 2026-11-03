@@ -7,7 +7,7 @@ import { YoutubeTranscript } from 'youtube-transcript';
 import { GEMINI_API_KEY, GEMINI_TEXT_MODEL, GEMINI_VISION_MODEL, TEMP_DIR } from '../config.js';
 import { getYtdlpPath } from './ffmpegService.js';
 import { stateManager } from './stateService.js';
-import { parseTimeToSeconds } from '../middleware/security.js';
+import { parseTimeToSeconds, assertSafeOutboundUrl, safeFetch } from '../middleware/security.js';
 export { parseTimeToSeconds };
 
 const execFilePromise = util.promisify(execFile);
@@ -103,32 +103,7 @@ async function generateWithOllama(
   system?: string
 ): Promise<string> {
   const rawEndpoint = (endpoint || 'http://localhost:11434').trim().replace(/\/$/, '');
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(rawEndpoint);
-  } catch {
-    throw new Error('Endpoint do Ollama inválido.');
-  }
-
-  const hostname = parsedUrl.hostname.toLowerCase();
-  const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
-
-  if (process.env.NODE_ENV === 'production') {
-    if (
-      isLocalhost ||
-      hostname.startsWith('10.') ||
-      hostname.startsWith('192.168.') ||
-      hostname.startsWith('172.') ||
-      hostname.startsWith('169.254.') ||
-      hostname.includes('metadata')
-    ) {
-      throw new Error('Conexões para endereços de rede privada são bloqueadas em produção.');
-    }
-  } else {
-    if (!isLocalhost) {
-      throw new Error('Em desenvolvimento local, o Ollama deve estar hospedado em localhost ou 127.0.0.1.');
-    }
-  }
+  const parsedUrl = await assertSafeOutboundUrl(rawEndpoint);
 
   const cleanModel = model || 'llama3:8b';
   const fullPrompt = system
@@ -139,7 +114,7 @@ async function generateWithOllama(
   const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout for local LLM
 
   try {
-    const res = await fetch(`${parsedUrl.origin}/api/generate`, {
+    const res = await safeFetch(`${parsedUrl.origin}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1844,7 +1819,7 @@ export async function analyzeViralCuts({
   const sequentialSlices = buildSequentialStorySlices(effectiveSegments, effectiveHeatmap, targetCount);
 
   const activeKey = resolveGeminiApiKey(userId);
-  const userCreds = stateManager.getCredentials(userId || 'default');
+  const userCreds = userId ? stateManager.getCredentials(userId) : undefined;
   const aiConfig = userCreds?.aiConfig;
   const isOllama = aiConfig?.provider === 'ollama' && Boolean(aiConfig.ollamaEndpoint);
 

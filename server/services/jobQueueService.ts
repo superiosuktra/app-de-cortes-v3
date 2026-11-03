@@ -91,17 +91,6 @@ class JobQueueService {
     if (meta && fs.existsSync(meta.filePath)) {
       return meta;
     }
-    // Also check direct file in CLIPS_DIR
-    const directPath = path.join(CLIPS_DIR, `${clipId}.mp4`);
-    if (fs.existsSync(directPath)) {
-      const stats = fs.statSync(directPath);
-      return {
-        filePath: directPath,
-        duration: 30,
-        fileSize: stats.size,
-        createdAt: stats.birthtime.toISOString(),
-      };
-    }
     return null;
   }
 
@@ -237,7 +226,7 @@ class JobQueueService {
           removeSilence: Boolean(cut.removeSilence),
         });
 
-        this.registerRenderedClip(cut.id, result.outputPath, result.duration, result.fileSize);
+        this.registerRenderedClip(cut.id, result.outputPath, result.duration, result.fileSize, job.userId);
 
         completed++;
         job.clipData = job.clipData || {};

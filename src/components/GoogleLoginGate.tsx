@@ -19,10 +19,20 @@ export const GoogleLoginGate: React.FC<GoogleLoginGateProps> = ({ onLoginSuccess
         return;
       }
 
-      if (event.data && event.data.type === 'GOOGLE_AUTH_SUCCESS' && event.data.token) {
+      if (event.data && (event.data.type === 'GOOGLE_AUTH_SUCCESS' || event.data.type === 'GOOGLE_OAUTH_SUCCESS')) {
         setIsLoading(false);
-        setAuthToken(event.data.token);
-        onLoginSuccess(event.data.user, event.data.token);
+        if (event.data.token) {
+          setAuthToken(event.data.token);
+        }
+        if (event.data.user) {
+          onLoginSuccess(event.data.user, event.data.token || '');
+        } else {
+          fetchJson<{ authenticated: boolean; user: AuthUser }>('/api/auth/me').then((res) => {
+            if (res.ok && res.data.user) {
+              onLoginSuccess(res.data.user, event.data.token || '');
+            }
+          });
+        }
       }
     };
 

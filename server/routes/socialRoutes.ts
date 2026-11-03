@@ -357,7 +357,10 @@ socialRouter.post('/post-youtube', async (req: Request, res: Response) => {
 // 3. Verify YouTube Token (with automatic 4/ Auth Code exchange and 1// Refresh Token renewal)
 socialRouter.post('/verify-token/youtube', async (req: Request, res: Response) => {
   try {
-    const userId = req.userId || 'default';
+    const userId = req.userId;
+    if (!userId) {
+      return res.status(401).json({ error: 'Acesso não autorizado.' });
+    }
     const { token, refreshToken, clientId, clientSecret } = req.body;
     const serverCreds = stateManager.getCredentials(userId);
     const rawRt = (refreshToken || '').trim();
@@ -572,8 +575,12 @@ socialRouter.post('/verify-token/youtube', async (req: Request, res: Response) =
 // 4. Verify Instagram Token
 socialRouter.post('/verify-token/instagram', async (req: Request, res: Response) => {
   try {
+    const userId = req.userId;
+    if (!userId) {
+      return res.status(401).json({ valid: false, error: 'Acesso não autorizado.' });
+    }
     const { token } = req.body;
-    const result = await verifyInstagramToken(token, req.userId || 'default');
+    const result = await verifyInstagramToken(token, userId);
     res.json(result);
   } catch (error: any) {
     res.status(500).json({ valid: false, error: error.message || 'Erro de conexão.' });
@@ -583,8 +590,12 @@ socialRouter.post('/verify-token/instagram', async (req: Request, res: Response)
 // 5. Verify TikTok Token
 socialRouter.post('/verify-token/tiktok', async (req: Request, res: Response) => {
   try {
+    const userId = req.userId;
+    if (!userId) {
+      return res.status(401).json({ valid: false, error: 'Acesso não autorizado.' });
+    }
     const { token } = req.body;
-    const result = await verifyTikTokToken(token, req.userId || 'default');
+    const result = await verifyTikTokToken(token, userId);
     res.json(result);
   } catch (error: any) {
     res.status(500).json({ valid: false, error: error.message || 'Erro de conexão.' });
@@ -594,8 +605,12 @@ socialRouter.post('/verify-token/tiktok', async (req: Request, res: Response) =>
 // 5b. Verify Kwai Token
 socialRouter.post('/verify-token/kwai', async (req: Request, res: Response) => {
   try {
+    const userId = req.userId;
+    if (!userId) {
+      return res.status(401).json({ valid: false, error: 'Acesso não autorizado.' });
+    }
     const { token } = req.body;
-    const result = await verifyKwaiToken(token, req.userId || 'default');
+    const result = await verifyKwaiToken(token, userId);
     res.json(result);
   } catch (error: any) {
     res.status(500).json({ valid: false, error: error.message || 'Erro de conexão com o Kwai.' });
@@ -605,7 +620,10 @@ socialRouter.post('/verify-token/kwai', async (req: Request, res: Response) => {
 // 5c. Direct Post to Kwai
 socialRouter.post('/post-kwai', async (req: Request, res: Response) => {
   try {
-    const userId = req.userId || 'default';
+    const userId = req.userId;
+    if (!userId) {
+      return res.status(401).json({ error: 'Acesso não autorizado.' });
+    }
     const serverCreds = stateManager.getCredentials(userId);
     const { token, title, caption, videoUrl } = req.body;
     const cleanToken = (token || serverCreds.kwai?.accessToken || '').trim();
@@ -621,7 +639,10 @@ socialRouter.post('/post-kwai', async (req: Request, res: Response) => {
 
 // 6. Refresh YouTube Token Endpoint
 socialRouter.post('/refresh-token/youtube', async (req: Request, res: Response) => {
-  const userId = req.userId || 'default';
+  const userId = req.userId;
+  if (!userId) {
+    return res.status(401).json({ success: false, error: 'Acesso não autorizado.' });
+  }
   const { refreshToken, clientId, clientSecret } = req.body || {};
   const result = await refreshYouTubeToken({ refreshToken, clientId, clientSecret, userId });
 
@@ -649,7 +670,10 @@ socialRouter.post('/refresh-token/youtube', async (req: Request, res: Response) 
 // 7. Exchange Code Endpoint
 socialRouter.post('/exchange-code/youtube', async (req: Request, res: Response) => {
   try {
-    const userId = req.userId || 'default';
+    const userId = req.userId;
+    if (!userId) {
+      return res.status(401).json({ error: 'Acesso não autorizado.' });
+    }
     const { code, clientId, clientSecret, redirectUri } = req.body || {};
     if (!code?.trim()) {
       return res.status(400).json({ error: 'Código de autorização não informado.' });
@@ -754,7 +778,10 @@ socialRouter.post('/auth/google/quick-connect', async (req: Request, res: Respon
 // 7. Test Webhook (Discord / Telegram) Endpoint
 socialRouter.post('/webhook/test', async (req: Request, res: Response) => {
   try {
-    const userId = req.userId || 'default';
+    const userId = req.userId;
+    if (!userId) {
+      return res.status(401).json({ error: 'Acesso não autorizado.' });
+    }
     const { discordWebhookUrl, telegramBotToken, telegramChatId } = req.body;
 
     if (discordWebhookUrl || telegramBotToken) {

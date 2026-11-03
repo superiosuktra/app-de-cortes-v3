@@ -26,8 +26,14 @@ export function setAuthToken(token: string | null): void {
   }
 }
 
+export function getCsrfToken(): string | null {
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
 /**
- * Standard fetch with automatic authentication headers.
+ * Standard fetch with automatic authentication headers and cookie credentials.
  */
 export async function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
   const token = getAuthToken();
@@ -40,7 +46,11 @@ export async function authFetch(url: string, options: RequestInit = {}): Promise
       headers.set('Authorization', `Bearer ${token}`);
     }
   }
-  return fetch(url, { ...options, headers });
+  const csrf = getCsrfToken();
+  if (csrf && !headers.has('x-csrf-token')) {
+    headers.set('x-csrf-token', csrf);
+  }
+  return fetch(url, { ...options, headers, credentials: options.credentials || 'include' });
 }
 
 /**
@@ -63,7 +73,12 @@ export async function fetchJson<T = any>(
         headers.set('Authorization', `Bearer ${token}`);
       }
     }
+    const csrf = getCsrfToken();
+    if (csrf && !headers.has('x-csrf-token')) {
+      headers.set('x-csrf-token', csrf);
+    }
     reqOptions.headers = headers;
+    reqOptions.credentials = reqOptions.credentials || 'include';
 
     const res = await fetch(url, reqOptions);
     const rawText = await res.text();

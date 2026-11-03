@@ -19,15 +19,31 @@ import {
   validateCutInterval,
   parseHttpRange,
   getUploadedFileOwner,
+  registerUploadedFile,
 } from '../middleware/security.js';
 
 export const cutRouter = Router();
 
 const ALLOWED_VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v']);
+const MAX_UPLOAD_DURATION_SEC = 7200; // 2 hours
+const MAX_UPLOAD_RESOLUTION = 4096; // 4K max
+const MAX_USER_STORAGE_BYTES = 1024 * 1024 * 1024; // 1 GB quota per user
+
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    cb(null, UPLOADS_DIR);
+  },
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    const safeExt = ALLOWED_VIDEO_EXTENSIONS.has(ext) ? ext : '.mp4';
+    const serverGeneratedName = `up_${Date.now()}_${crypto.randomBytes(12).toString('hex')}${safeExt}`;
+    cb(null, serverGeneratedName);
+  },
+});
 
 const upload = multer({
-  dest: UPLOADS_DIR,
-  limits: { fileSize: 500 * 1024 * 1024 }, // 500MB max
+  storage,
+  limits: { fileSize: 500 * 1024 * 1024 }, // 500MB max per file
   fileFilter: (_req, file, cb) => {
     const ext = path.extname(file.originalname || '').toLowerCase();
     const isVideoMime = (file.mimetype || '').startsWith('video/');
@@ -45,8 +61,84 @@ const renderRateLimiter = createRateLimiter({
   windowMs: 60 * 1000,
   maxRequests: 30,
   scope: 'ffmpeg-render',
+  byUser: true,
   message: 'Limite de renderizações de vídeo por minuto atingido. Aguarde a conclusão do processamento atual.',
 });
+
+const uploadRateLimiter = createRateLimiter({
+  windowMs: 60 * 1000,
+  maxRequests: 10,
+  scope: 'video-upload',
+  byUser: true,
+  message: 'Limite de uploads por minuto atingido. Aguarde alguns instantes antes de enviar outro arquivo.',
+});
+
+export function getUserUploadStorageBytes(userId: string): number {
+  let total = 0;
+  try {
+    if (!fs.existsSync(UPLOADS_DIR)) return 0;
+    const files = fs.readdirSync(UPLOADS_DIR);
+    for (const f of files) {
+      const fullPath = path.join(UPLOADS_DIR, f);
+      if (getUploadedFileOwner(fullPath) === userId) {
+        try {
+          total += fs.statSync(fullPath).size;
+        } catch {}
+      }
+    }
+  } catch {}
+  return total;
+}
+
+export async function validateUploadedFile(
+  file: Express.Multer.File,
+  userId: string
+): Promise<{ valid: boolean; error?: string; status?: number }> {
+  if (!file || !isPathInsideDir(file.path, UPLOADS_DIR)) {
+    return { valid: false, error: 'Arquivo de vídeo inválido.', status: 400 };
+  }
+
+  // 1. Quota check
+  const currentUsage = getUserUploadStorageBytes(userId);
+  if (currentUsage + file.size > MAX_USER_STORAGE_BYTES) {
+    return {
+      valid: false,
+      error: 'Cota de armazenamento de upload excedida (máximo de 1GB por usuário).',
+      status: 413,
+    };
+  }
+
+  // 2. ffprobe real content validation
+  const probe = await validateMediaFile(file.path);
+  if (!probe.valid || !probe.hasVideo) {
+    return {
+      valid: false,
+      error: probe.error || 'Arquivo de vídeo inválido ou sem stream de vídeo detectado.',
+      status: 400,
+    };
+  }
+
+  // 3. Duration check
+  if (probe.duration > MAX_UPLOAD_DURATION_SEC) {
+    return {
+      valid: false,
+      error: `A duração do vídeo (${Math.round(probe.duration)}s) excede o limite máximo permitido de ${MAX_UPLOAD_DURATION_SEC}s.`,
+      status: 400,
+    };
+  }
+
+  // 4. Resolution check
+  if (probe.width > MAX_UPLOAD_RESOLUTION || probe.height > MAX_UPLOAD_RESOLUTION) {
+    return {
+      valid: false,
+      error: `A resolução do vídeo (${probe.width}x${probe.height}) excede o limite de ${MAX_UPLOAD_RESOLUTION}x${MAX_UPLOAD_RESOLUTION}.`,
+      status: 400,
+    };
+  }
+
+  registerUploadedFile(file.path, userId);
+  return { valid: true };
+}
 
 function handleRouteError(res: Response, err: any, context: string) {
   const correlationId = crypto.randomUUID();
@@ -102,7 +194,17 @@ cutRouter.post('/clips/:clipId/render', renderRateLimiter, async (req: Request, 
     } = req.body;
 
     // Resolve source video
-    if (sourceFilePath && fs.existsSync(sourceFilePath) && isPathInsideDir(sourceFilePath, UPLOADS_DIR)) {
+    if (sourceFilePath) {
+      if (!isPathInsideDir(sourceFilePath, UPLOADS_DIR)) {
+        return res.status(403).json({ error: 'Acesso negado: caminho de arquivo fora do diretório de uploads.' });
+      }
+      const owner = getUploadedFileOwner(sourceFilePath);
+      if (!owner || !req.userId || owner !== req.userId) {
+        return res.status(404).json({ error: 'Arquivo de vídeo não encontrado.' });
+      }
+      if (!fs.existsSync(sourceFilePath)) {
+        return res.status(404).json({ error: 'Arquivo de vídeo não encontrado no disco.' });
+      }
       rawSourcePath = sourceFilePath;
     } else if (videoUrl) {
       const safeYt = normalizeSafeYouTubeUrl(videoUrl);
@@ -141,7 +243,7 @@ cutRouter.post('/clips/:clipId/render', renderRateLimiter, async (req: Request, 
       removeSilence: Boolean(removeSilence),
     });
 
-    jobQueue.registerRenderedClip(clipId, renderResult.outputPath, renderResult.duration, renderResult.fileSize);
+    jobQueue.registerRenderedClip(clipId, renderResult.outputPath, renderResult.duration, renderResult.fileSize, req.userId);
 
     return res.json({
       success: true,
@@ -171,7 +273,7 @@ cutRouter.get('/clips/:clipId/preview', async (req: Request, res: Response) => {
   const clipMeta = jobQueue.getRenderedClip(clipId);
   const filePath = clipMeta?.filePath || path.join(CLIPS_DIR, `${clipId}.mp4`);
 
-  if (clipMeta?.userId && req.userId && clipMeta.userId !== req.userId) {
+  if (!clipMeta || !clipMeta.userId || !req.userId || clipMeta.userId !== req.userId) {
     return res.status(404).json({ error: 'Corte não encontrado.' });
   }
 
@@ -219,7 +321,7 @@ cutRouter.get('/clips/:clipId/download', async (req: Request, res: Response) => 
   const clipMeta = jobQueue.getRenderedClip(clipId);
   const filePath = clipMeta?.filePath || path.join(CLIPS_DIR, `${clipId}.mp4`);
 
-  if (clipMeta?.userId && req.userId && clipMeta.userId !== req.userId) {
+  if (!clipMeta || !clipMeta.userId || !req.userId || clipMeta.userId !== req.userId) {
     return res.status(404).json({ error: 'Arquivo do corte não encontrado para download.' });
   }
 
@@ -245,7 +347,7 @@ cutRouter.post('/batch/render', renderRateLimiter, async (req: Request, res: Res
         return res.status(403).json({ error: 'Acesso negado: caminho de arquivo fora do diretório de uploads.' });
       }
       const owner = getUploadedFileOwner(sourcePathToUse);
-      if (owner && req.userId && owner !== req.userId) {
+      if (!owner || !req.userId || owner !== req.userId) {
         return res.status(404).json({ error: 'Arquivo de vídeo não encontrado.' });
       }
     }
@@ -283,7 +385,7 @@ cutRouter.post('/batch/render', renderRateLimiter, async (req: Request, res: Res
 cutRouter.get('/batch/:batchId', (req: Request, res: Response) => {
   const jobId = req.params.batchId;
   const job = jobQueue.getJob(jobId) || jobQueue.get(jobId);
-  if (!job || (job.userId && req.userId && job.userId !== req.userId)) {
+  if (!job || !job.userId || !req.userId || job.userId !== req.userId) {
     return res.status(404).json({ error: 'Tarefa não encontrada.' });
   }
   res.json(job);
@@ -293,7 +395,7 @@ cutRouter.get('/batch/:batchId', (req: Request, res: Response) => {
 cutRouter.post('/batch/:batchId/cancel', (req: Request, res: Response) => {
   const jobId = req.params.batchId;
   const job = jobQueue.getJob(jobId) || jobQueue.get(jobId);
-  if (!job || (job.userId && req.userId && job.userId !== req.userId)) {
+  if (!job || !job.userId || !req.userId || job.userId !== req.userId) {
     return res.status(404).json({ error: 'Tarefa não encontrada.' });
   }
   const success = jobQueue.cancelJob(jobId);
@@ -325,7 +427,7 @@ cutRouter.post('/clips/bulk-download', async (req: Request, res: Response) => {
 cutRouter.get('/batch/:batchId/download', (req: Request, res: Response) => {
   const jobId = req.params.batchId;
   const job = jobQueue.getJob(jobId) || jobQueue.get(jobId);
-  if (!job || (job.userId && req.userId && job.userId !== req.userId)) {
+  if (!job || !job.userId || !req.userId || job.userId !== req.userId) {
     return res.status(404).json({ error: 'Arquivo ZIP não encontrado.' });
   }
 
@@ -402,7 +504,7 @@ cutRouter.post('/download-youtube-cut', renderRateLimiter, async (req: Request, 
       if (fs.existsSync(rawSlice)) fs.unlinkSync(rawSlice);
     } catch {}
 
-    jobQueue.registerRenderedClip(clipId, renderResult.outputPath, renderResult.duration, renderResult.fileSize);
+    jobQueue.registerRenderedClip(clipId, renderResult.outputPath, renderResult.duration, renderResult.fileSize, req.userId);
 
     const safeTitle = (title || 'corte_viral').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 30);
     res.download(outPath, `${safeTitle}.mp4`);
@@ -412,12 +514,23 @@ cutRouter.post('/download-youtube-cut', renderRateLimiter, async (req: Request, 
 });
 
 // 10. Upload Local Video File, Cut with FFmpeg and Post to YouTube
-cutRouter.post('/upload-and-cut-short', renderRateLimiter, upload.single('video') as any, async (req: Request, res: Response) => {
+cutRouter.post('/upload-and-cut-short', uploadRateLimiter, upload.single('video') as any, async (req: Request, res: Response) => {
   let renderedPath = '';
   try {
     const file = req.file;
-    if (!file || !isPathInsideDir(file.path, UPLOADS_DIR)) {
+    if (!file) {
       return res.status(400).json({ error: 'Nenhum arquivo de vídeo válido foi enviado.' });
+    }
+
+    if (!req.userId) {
+      if (file.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+      return res.status(401).json({ error: 'Acesso não autorizado. Faça login para continuar.' });
+    }
+
+    const validation = await validateUploadedFile(file, req.userId);
+    if (!validation.valid) {
+      if (file.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+      return res.status(validation.status || 400).json({ error: validation.error });
     }
 
     const {
@@ -438,7 +551,7 @@ cutRouter.post('/upload-and-cut-short', renderRateLimiter, upload.single('video'
       return res.status(400).json({ error: intervalCheck.error });
     }
 
-    const serverCreds = stateManager.getCredentials(req.userId || 'default');
+    const serverCreds = stateManager.getCredentials(req.userId);
     const rawToken = (token || '').trim();
     const isMasked = !rawToken || rawToken.startsWith('***') || rawToken.includes('••••');
     const tokenToUse = (isMasked ? serverCreds.youtube.accessToken : rawToken || '').trim();
@@ -503,11 +616,22 @@ cutRouter.post('/upload-and-cut-short', renderRateLimiter, upload.single('video'
 });
 
 // 11. Render Local Video File Cut to MP4 and Download to Computer
-cutRouter.post('/render-download-cut', renderRateLimiter, upload.single('video') as any, async (req: Request, res: Response) => {
+cutRouter.post('/render-download-cut', uploadRateLimiter, upload.single('video') as any, async (req: Request, res: Response) => {
   const file = req.file;
   try {
-    if (!file || !isPathInsideDir(file.path, UPLOADS_DIR)) {
+    if (!file) {
       return res.status(400).json({ error: 'Nenhum arquivo de vídeo válido foi enviado.' });
+    }
+
+    if (!req.userId) {
+      if (file.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+      return res.status(401).json({ error: 'Acesso não autorizado. Faça login para continuar.' });
+    }
+
+    const validation = await validateUploadedFile(file, req.userId);
+    if (!validation.valid) {
+      if (file.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+      return res.status(validation.status || 400).json({ error: validation.error });
     }
 
     const {
@@ -537,7 +661,7 @@ cutRouter.post('/render-download-cut', renderRateLimiter, upload.single('video')
       framing,
     });
 
-    jobQueue.registerRenderedClip(clipId, renderResult.outputPath, renderResult.duration, renderResult.fileSize);
+    jobQueue.registerRenderedClip(clipId, renderResult.outputPath, renderResult.duration, renderResult.fileSize, req.userId);
 
     const safeTitle = (title || 'corte_viral').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 30);
     res.download(outPath, `${safeTitle}.mp4`, () => {

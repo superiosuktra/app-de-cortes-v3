@@ -64,11 +64,11 @@ export async function refreshYouTubeToken(customCreds?: {
   clientSecret?: string;
   userId?: string;
 }): Promise<RefreshTokenResult> {
-  const userKey = customCreds?.userId || 'default';
-  const serverCreds = stateManager.getCredentials(userKey);
+  const userKey = customCreds?.userId;
+  const serverCreds = userKey ? stateManager.getCredentials(userKey) : null;
   const rawPassedRt = (customCreds?.refreshToken || '').trim();
   const cleanPassedRt = rawPassedRt.startsWith('***') || rawPassedRt.includes('••••') ? '' : rawPassedRt;
-  const refreshToken = (cleanPassedRt || serverCreds.youtube.refreshToken || '').trim();
+  const refreshToken = (cleanPassedRt || serverCreds?.youtube.refreshToken || '').trim();
 
   if (!refreshToken) {
     return {
@@ -77,10 +77,10 @@ export async function refreshYouTubeToken(customCreds?: {
     };
   }
 
-  const clientId = (customCreds?.clientId || process.env.GOOGLE_CLIENT_ID || serverCreds.youtube.clientId || '').trim();
+  const clientId = (customCreds?.clientId || process.env.GOOGLE_CLIENT_ID || serverCreds?.youtube.clientId || '').trim();
   const rawSecret = (customCreds?.clientSecret || '').trim();
   const cleanSecret = rawSecret.startsWith('***') || rawSecret.includes('••••') ? '' : rawSecret;
-  const clientSecret = (cleanSecret || process.env.GOOGLE_CLIENT_SECRET || serverCreds.youtube.clientSecret || '').trim();
+  const clientSecret = (cleanSecret || process.env.GOOGLE_CLIENT_SECRET || serverCreds?.youtube.clientSecret || '').trim();
 
   let newAccessToken = '';
   let newRefreshToken = refreshToken;
@@ -134,31 +134,34 @@ export async function refreshYouTubeToken(customCreds?: {
 
   if (newAccessToken) {
     const profile = await fetchYouTubeChannelProfile(newAccessToken);
+    const prevYt = serverCreds?.youtube;
     const channelName = profile.valid
       ? profile.channelName
-      : serverCreds.youtube.channelTitle || serverCreds.youtube.accountName || 'Canal do YouTube';
-    const avatar = profile.avatar || serverCreds.youtube.avatar || '';
-    const customUrl = profile.customUrl || serverCreds.youtube.customUrl || '';
+      : prevYt?.channelTitle || prevYt?.accountName || 'Canal do YouTube';
+    const avatar = profile.avatar || prevYt?.avatar || '';
+    const customUrl = profile.customUrl || prevYt?.customUrl || '';
 
-    stateManager.updateCredentials(
-      {
-        youtube: {
-          ...serverCreds.youtube,
-          accessToken: newAccessToken,
-          refreshToken: newRefreshToken,
-          clientId: clientId || serverCreds.youtube.clientId,
-          clientSecret: clientSecret || serverCreds.youtube.clientSecret,
-          status: 'connected',
-          channelTitle: channelName,
-          accountName: channelName,
-          displayName: channelName,
-          customUrl,
-          avatar,
-          verifiedAt: new Date().toLocaleTimeString('pt-BR'),
+    if (userKey) {
+      stateManager.updateCredentials(
+        {
+          youtube: {
+            ...prevYt,
+            accessToken: newAccessToken,
+            refreshToken: newRefreshToken,
+            clientId: clientId || prevYt?.clientId,
+            clientSecret: clientSecret || prevYt?.clientSecret,
+            status: 'connected',
+            channelTitle: channelName,
+            accountName: channelName,
+            displayName: channelName,
+            customUrl,
+            avatar,
+            verifiedAt: new Date().toLocaleTimeString('pt-BR'),
+          },
         },
-      },
-      userKey
-    );
+        userKey
+      );
+    }
 
     return {
       success: true,
@@ -194,8 +197,8 @@ export async function exchangeYouTubeAuthCode({
   redirectUri?: string;
   userId?: string;
 }) {
-  const userKey = userId || 'default';
-  const serverCreds = stateManager.getCredentials(userKey);
+  const userKey = userId;
+  const serverCreds = userKey ? stateManager.getCredentials(userKey) : null;
   let cleanCode = (code || '').trim();
 
   // Extract ?code=... if user pasted the entire redirect URL
@@ -212,10 +215,10 @@ export async function exchangeYouTubeAuthCode({
     } catch {}
   }
 
-  const useClientId = (clientId || process.env.GOOGLE_CLIENT_ID || serverCreds.youtube.clientId || '').trim();
+  const useClientId = (clientId || process.env.GOOGLE_CLIENT_ID || serverCreds?.youtube.clientId || '').trim();
   const rawSecret = (clientSecret || '').trim();
   const cleanSecret = rawSecret.startsWith('***') || rawSecret.includes('••••') ? '' : rawSecret;
-  const useClientSecret = (cleanSecret || process.env.GOOGLE_CLIENT_SECRET || serverCreds.youtube.clientSecret || '').trim();
+  const useClientSecret = (cleanSecret || process.env.GOOGLE_CLIENT_SECRET || serverCreds?.youtube.clientSecret || '').trim();
 
   let accessToken = '';
   let refreshToken = '';
@@ -274,30 +277,32 @@ export async function exchangeYouTubeAuthCode({
     const avatar = profile.avatar || '';
     const customUrl = profile.customUrl || '';
 
-    stateManager.updateCredentials(
-      {
-        youtube: {
-          ...serverCreds.youtube,
-          accessToken,
-          refreshToken: refreshToken || serverCreds.youtube.refreshToken,
-          clientId: useClientId || serverCreds.youtube.clientId,
-          clientSecret: useClientSecret || serverCreds.youtube.clientSecret,
-          status: 'connected',
-          channelTitle: channelName,
-          displayName: channelName,
-          accountName: channelName,
-          customUrl,
-          avatar,
-          verifiedAt: new Date().toLocaleTimeString('pt-BR'),
+    if (userKey && serverCreds) {
+      stateManager.updateCredentials(
+        {
+          youtube: {
+            ...serverCreds.youtube,
+            accessToken,
+            refreshToken: refreshToken || serverCreds?.youtube.refreshToken,
+            clientId: useClientId || serverCreds.youtube.clientId,
+            clientSecret: useClientSecret || serverCreds.youtube.clientSecret,
+            status: 'connected',
+            channelTitle: channelName,
+            displayName: channelName,
+            accountName: channelName,
+            customUrl,
+            avatar,
+            verifiedAt: new Date().toLocaleTimeString('pt-BR'),
+          },
         },
-      },
-      userKey
-    );
+        userKey
+      );
+    }
 
     return {
       success: true,
       accessToken,
-      refreshToken: refreshToken || serverCreds.youtube.refreshToken,
+      refreshToken: refreshToken || serverCreds?.youtube.refreshToken,
       channelName,
       customUrl,
       avatar,

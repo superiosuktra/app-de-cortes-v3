@@ -1,7 +1,21 @@
 import fs from 'fs';
 import path from 'path';
 import * as archiverModule from 'archiver';
-const archiver = ((archiverModule as any).default || archiverModule) as any;
+
+function createZipArchiveInstance(options?: any): any {
+  const mod: any = archiverModule;
+  if (mod.ZipArchive) {
+    return new mod.ZipArchive(options);
+  }
+  const defaultExport = mod.default || mod;
+  if (typeof defaultExport === 'function') {
+    return defaultExport('zip', options);
+  }
+  if (defaultExport && defaultExport.ZipArchive) {
+    return new defaultExport.ZipArchive(options);
+  }
+  throw new Error('Não foi possível instanciar o criador de arquivos zip');
+}
 import { TEMP_DIR } from '../config.js';
 import { ViralCut } from '../../src/types.js';
 
@@ -97,7 +111,7 @@ export async function createBatchZipArchive(options: CreateZipOptions): Promise<
   const zipPath = path.join(TEMP_DIR, zipFileName);
 
   const output = fs.createWriteStream(zipPath);
-  const archive = archiver('zip', {
+  const archive = createZipArchiveInstance({
     zlib: { level: 5 }, // Balanced compression speed and size
   });
 

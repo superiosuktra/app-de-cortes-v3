@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import db from '../db.js';
+import { parseCookies } from './security.js';
 
 export interface AuthenticatedUser {
   id: string;
@@ -43,13 +44,20 @@ setInterval(() => {
  * Rejects and deletes expired sessions. Enforces 401 on protected routes.
  */
 export function authMiddleware(req: Request, res: Response, next: NextFunction) {
-  // Only accept Authorization Bearer or x-session-token header
+  // Support Authorization Bearer, x-session-token header, or session_token HttpOnly cookie
   let token: string | null = null;
+  let isCookieAuth = false;
   const authHeader = req.headers['authorization'];
   if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
     token = authHeader.slice(7).trim();
   } else if (typeof req.headers['x-session-token'] === 'string') {
     token = req.headers['x-session-token'].trim();
+  } else if (req.headers.cookie) {
+    const cookies = parseCookies(req.headers.cookie);
+    if (cookies.session_token) {
+      token = cookies.session_token.trim();
+      isCookieAuth = true;
+    }
   }
 
   req.userId = '';
@@ -92,19 +100,32 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
     }
   }
 
+  const fullPath = (req.baseUrl || '') + req.path;
+  const cleanPath = fullPath.replace(/\/$/, '');
+
   // Allow non-API requests (static assets, SPA entry points, legal pages)
-  if (!req.path.startsWith('/api')) {
+  if (!fullPath.startsWith('/api')) {
     return next();
   }
 
   // Allow explicitly public API endpoints
-  const cleanPath = req.path.replace(/\/$/, '');
   if (PUBLIC_API_ROUTES.has(cleanPath)) {
     return next();
   }
 
-  // If user is authenticated, proceed
+  // If user is authenticated, check CSRF for cookie-based requests on mutating methods
   if (req.user && req.userId) {
+    if (isCookieAuth && ['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method.toUpperCase())) {
+      const cookies = parseCookies(req.headers.cookie);
+      const csrfCookie = cookies.csrf_token;
+      const csrfHeader = req.headers['x-csrf-token'];
+      if (!csrfCookie || !csrfHeader || csrfCookie !== csrfHeader) {
+        return res.status(403).json({
+          error: 'Acesso negado: token CSRF inválido ou ausente.',
+          code: 'CSRF_INVALID',
+        });
+      }
+    }
     return next();
   }
 

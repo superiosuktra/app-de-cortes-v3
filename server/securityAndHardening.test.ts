@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'fs';
 import path from 'path';
 import http from 'http';
-import { TEMP_DIR, UPLOADS_DIR } from './config.js';
+import { TEMP_DIR, UPLOADS_DIR, CLIPS_DIR } from './config.js';
 import {
   parseCookies,
   parseHttpRange,
@@ -577,17 +577,10 @@ test('P1.12 & P2.17 - OAuth callback rejects unverified email (403) and sessions
   assert.equal(db.getSessionByRawToken(rawToken)?.user_id, 'default');
 
   // Test OAuth callback rejecting unverified email
-  stateManager.updateCredentials(
-    {
-      youtube: {
-        accessToken: '',
-        clientId: 'test-client-id.apps.googleusercontent.com',
-        clientSecret: 'test-client-secret',
-        status: 'disconnected',
-      },
-    },
-    'default'
-  );
+  const origClientId = process.env.GOOGLE_CLIENT_ID;
+  const origClientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  process.env.GOOGLE_CLIENT_ID = 'test-client-id.apps.googleusercontent.com';
+  process.env.GOOGLE_CLIENT_SECRET = 'test-client-secret';
 
   const originalFetch = globalThis.fetch;
   try {
@@ -629,6 +622,8 @@ test('P1.12 & P2.17 - OAuth callback rejects unverified email (403) and sessions
     });
   } finally {
     globalThis.fetch = originalFetch;
+    process.env.GOOGLE_CLIENT_ID = origClientId;
+    process.env.GOOGLE_CLIENT_SECRET = origClientSecret;
     db.deleteSessionByRawToken(rawToken);
   }
 });
@@ -676,5 +671,297 @@ test('P1.13 - jobQueue handles cut without title without wedging queue, prevents
     assert.equal(jobQueue.has(job.id), false);
   } finally {
     if (fs.existsSync(dummyOut)) fs.unlinkSync(dummyOut);
+  }
+});
+
+
+test('P0.1 - Resource authorization: user A never accesses resource of user B, nor unowned resources (missing userId)', async () => {
+  const userAToken = createAuthSession('user_auth_a', 'autha@test.local');
+
+  // 1. Clip registered WITHOUT userId (unowned/orphan clip)
+  const orphanClipId = `orphan_clip_${Date.now()}`;
+  const orphanClipPath = path.join(CLIPS_DIR, `${orphanClipId}.mp4`);
+  fs.writeFileSync(orphanClipPath, Buffer.from('orphan-mp4-data'));
+  (jobQueue as any).clipMetadata.set(orphanClipId, {
+    filePath: orphanClipPath,
+    duration: 15,
+    fileSize: 15,
+    createdAt: new Date().toISOString(),
+    userId: undefined, // unowned
+  });
+
+  // 2. Job created WITHOUT userId (unowned/orphan job)
+  const orphanJobId = `orphan_job_${Date.now()}`;
+  (jobQueue as any).jobs.set(orphanJobId, {
+    id: orphanJobId,
+    status: 'completed',
+    totalItems: 1,
+    completedCuts: 1,
+    failedCuts: 0,
+    progressPercent: 100,
+    userId: undefined, // unowned
+    createdAt: Date.now(),
+  } as any);
+
+  // 3. Unowned uploaded file in UPLOADS_DIR (no owner in registeredUploadedFiles)
+  const orphanUploadPath = path.join(UPLOADS_DIR, `orphan_up_${Date.now()}.mp4`);
+  fs.writeFileSync(orphanUploadPath, Buffer.from('orphan-upload-content'));
+
+  try {
+    await withTestServer(async (baseUrl) => {
+      // User A attempts to access unowned clip preview -> MUST be 404
+      const previewRes = await fetch(`${baseUrl}/api/clips/${orphanClipId}/preview`, {
+        headers: { Authorization: `Bearer ${userAToken}` },
+      });
+      assert.equal(previewRes.status, 404, 'Unowned clip preview must return 404');
+
+      // User A attempts to access unowned clip download -> MUST be 404
+      const downloadRes = await fetch(`${baseUrl}/api/clips/${orphanClipId}/download`, {
+        headers: { Authorization: `Bearer ${userAToken}` },
+      });
+      assert.equal(downloadRes.status, 404, 'Unowned clip download must return 404');
+
+      // User A attempts to access unowned batch job -> MUST be 404
+      const jobRes = await fetch(`${baseUrl}/api/batch/${orphanJobId}`, {
+        headers: { Authorization: `Bearer ${userAToken}` },
+      });
+      assert.equal(jobRes.status, 404, 'Unowned job query must return 404');
+
+      // User A attempts to render using unowned uploaded file -> MUST be 404
+      const batchRenderRes = await fetch(`${baseUrl}/api/batch/render`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${userAToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          sourceFilePath: orphanUploadPath,
+          cuts: [{ id: 'c1', title: 'Teste', startTime: '00:00', endTime: '00:15' }],
+        }),
+      });
+      assert.equal(batchRenderRes.status, 404, 'Unowned sourceFilePath must return 404');
+    });
+  } finally {
+    if (fs.existsSync(orphanClipPath)) fs.unlinkSync(orphanClipPath);
+    if (fs.existsSync(orphanUploadPath)) fs.unlinkSync(orphanUploadPath);
+    (jobQueue as any).clipMetadata.delete(orphanClipId);
+    (jobQueue as any).jobs.delete(orphanJobId);
+  }
+});
+
+
+test('P0.2 - SSRF protection: decimal/hex formats, default DNS lookup, and redirect validation', async () => {
+  // Decimal IP representations of 127.0.0.1 (2130706433) and 10.0.0.1 (167772161)
+  await assert.rejects(
+    () => assertSafeOutboundUrl('http://2130706433:8080/'),
+    /SSRF bloqueado/i,
+    'Decimal representation of 127.0.0.1 must be blocked'
+  );
+
+  // Hex IP representations of 127.0.0.1 (0x7f000001)
+  await assert.rejects(
+    () => assertSafeOutboundUrl('http://0x7f000001:8080/'),
+    /SSRF bloqueado/i,
+    'Hex representation of 127.0.0.1 must be blocked'
+  );
+
+  // Default DNS resolution when lookupFn is omitted:
+  // 127.0.0.1.nip.io resolves to 127.0.0.1 and must be blocked even without options.lookupFn
+  await assert.rejects(
+    () => assertSafeOutboundUrl('http://127.0.0.1.nip.io:8080/'),
+    /SSRF bloqueado/i,
+    'DNS resolving to private IP must be blocked by default without custom lookupFn'
+  );
+});
+
+test('P0.4 - demo-login requires explicit ENABLE_DEMO_LOGIN=true and fails closed when unset or in production', async () => {
+  const origDemoFlag = process.env.ENABLE_DEMO_LOGIN;
+  const origNodeEnv = process.env.NODE_ENV;
+
+  try {
+    await withTestServer(async (baseUrl) => {
+      // 1. Unset ENABLE_DEMO_LOGIN -> MUST fail closed with 403
+      delete process.env.ENABLE_DEMO_LOGIN;
+      process.env.NODE_ENV = 'development';
+      const unsetRes = await fetch(`${baseUrl}/api/auth/demo-login`, { method: 'POST' });
+      assert.equal(unsetRes.status, 403, 'demo-login without ENABLE_DEMO_LOGIN must be 403');
+
+      // 2. Explicitly false -> MUST fail closed with 403
+      process.env.ENABLE_DEMO_LOGIN = 'false';
+      const falseRes = await fetch(`${baseUrl}/api/auth/demo-login`, { method: 'POST' });
+      assert.equal(falseRes.status, 403, 'demo-login with ENABLE_DEMO_LOGIN=false must be 403');
+
+      // 3. In production, even if ENABLE_DEMO_LOGIN=true -> MUST fail closed with 403
+      process.env.ENABLE_DEMO_LOGIN = 'true';
+      process.env.NODE_ENV = 'production';
+      const prodRes = await fetch(`${baseUrl}/api/auth/demo-login`, { method: 'POST' });
+      assert.equal(prodRes.status, 403, 'demo-login in production must be 403');
+
+      // 4. In development with ENABLE_DEMO_LOGIN=true -> succeeds with 200
+      process.env.ENABLE_DEMO_LOGIN = 'true';
+      process.env.NODE_ENV = 'development';
+      const okRes = await fetch(`${baseUrl}/api/auth/demo-login`, { method: 'POST' });
+      assert.equal(okRes.status, 200, 'demo-login in dev with ENABLE_DEMO_LOGIN=true must succeed');
+      const data = await okRes.json();
+      assert.equal(data.success, true);
+      assert.ok(data.token);
+    });
+  } finally {
+    process.env.ENABLE_DEMO_LOGIN = origDemoFlag;
+    process.env.NODE_ENV = origNodeEnv;
+  }
+});
+
+
+// ============================================================================
+// P0 ITEM 3: Cookie-based session, CSRF protection on mutating methods, no inline script in OAuth callback
+// ============================================================================
+
+test('P0.3 - Session cookies (httpOnly, SameSite=Lax), CSRF protection, and OAuth callback redirect', async () => {
+  const origClientId = process.env.GOOGLE_CLIENT_ID;
+  const origClientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  process.env.GOOGLE_CLIENT_ID = 'test-client-id.apps.googleusercontent.com';
+  process.env.GOOGLE_CLIENT_SECRET = 'test-client-secret';
+
+  const originalFetch = globalThis.fetch;
+  try {
+    await withTestServer(async (baseUrl) => {
+      globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+        const urlStr = String(input);
+        if (urlStr === 'https://oauth2.googleapis.com/token') {
+          return new Response(JSON.stringify({ access_token: 'ya29.test_valid_oauth_token' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (urlStr === 'https://www.googleapis.com/oauth2/v2/userinfo') {
+          return new Response(
+            JSON.stringify({
+              id: 'google_valid_999',
+              email: 'valid_user@example.com',
+              email_verified: true,
+              verified_email: true,
+              name: 'Valid Verified User',
+              picture: 'https://example.com/pic.jpg',
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return originalFetch(input, init);
+      };
+
+      // 1. OAuth callback returns 302 redirect (no inline scripts) and sets session_token + csrf_token cookies
+      const callbackRes = await originalFetch(
+        `${baseUrl}/api/auth/google/callback?code=4/valid_code&state=valid_csrf_state`,
+        {
+          redirect: 'manual',
+          headers: {
+            Cookie: 'oauth_state=valid_csrf_state; oauth_code_verifier=valid_verifier',
+          },
+        }
+      );
+      assert.equal(callbackRes.status, 302, 'OAuth callback must return 302 redirect');
+      const location = callbackRes.headers.get('location');
+      assert.ok(location?.includes('auth=success'), 'OAuth callback redirect must point to /?auth=success');
+
+      const setCookie = callbackRes.headers.get('set-cookie') || '';
+      assert.ok(setCookie.includes('session_token='), 'Must set session_token cookie');
+      assert.ok(setCookie.includes('HttpOnly'), 'session_token must be HttpOnly');
+      assert.ok(setCookie.includes('SameSite=Lax'), 'session_token must be SameSite=Lax');
+      assert.ok(setCookie.includes('csrf_token='), 'Must set csrf_token cookie');
+
+      // Extract cookies for testing CSRF
+      const sessionMatch = setCookie.match(/session_token=([^;]+)/);
+      const csrfMatch = setCookie.match(/csrf_token=([^;]+)/);
+      assert.ok(sessionMatch && csrfMatch);
+      const sessionVal = sessionMatch[1];
+      const csrfVal = csrfMatch[1];
+
+      // 2. Cookie-authenticated mutating request without CSRF token header -> MUST return 403
+      const noCsrfRes = await originalFetch(`${baseUrl}/api/clips/bulk-download`, {
+        method: 'POST',
+        headers: {
+          Cookie: `session_token=${sessionVal}; csrf_token=${csrfVal}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ cuts: [{ id: '1', title: 't' }] }),
+      });
+      assert.equal(noCsrfRes.status, 403, 'Cookie-authenticated mutating request without x-csrf-token must be 403');
+      const noCsrfData = await noCsrfRes.json();
+      assert.equal(noCsrfData.code, 'CSRF_INVALID');
+
+      // 3. Cookie-authenticated mutating request WITH valid matching x-csrf-token header -> succeeds
+      const withCsrfRes = await originalFetch(`${baseUrl}/api/clips/bulk-download`, {
+        method: 'POST',
+        headers: {
+          Cookie: `session_token=${sessionVal}; csrf_token=${csrfVal}`,
+          'x-csrf-token': csrfVal,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ cuts: [{ id: '1', title: 't' }] }),
+      });
+      assert.equal(withCsrfRes.status, 200, 'Cookie-authenticated request with matching x-csrf-token must succeed');
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    process.env.GOOGLE_CLIENT_ID = origClientId;
+    process.env.GOOGLE_CLIENT_SECRET = origClientSecret;
+  }
+});
+
+// ============================================================================
+// P0 ITEM 5 & 6: Upload validation (duration, resolution, quota) and per-user rate limit
+// ============================================================================
+
+test('P0.5 & P0.6 - Upload checks media structure, quota, resolution, duration, and enforces per-user rate limit', async () => {
+  const userToken = createAuthSession('user_upload_test', 'upload@test.local');
+
+  // Create a corrupt / 0-byte fake mp4
+  const corruptFile = path.join(UPLOADS_DIR, `corrupt_${Date.now()}.mp4`);
+  fs.writeFileSync(corruptFile, Buffer.alloc(0));
+
+  try {
+    await withTestServer(async (baseUrl) => {
+      // 1. Uploading without authentication -> 401
+      const unauthFormData = new FormData();
+      unauthFormData.append('video', new Blob(['fake content'], { type: 'video/mp4' }), 'test.mp4');
+      const unauthRes = await fetch(`${baseUrl}/api/render-download-cut`, {
+        method: 'POST',
+        body: unauthFormData,
+      });
+      assert.equal(unauthRes.status, 401);
+
+      // 2. Corrupt / empty video file -> 400
+      const corruptFormData = new FormData();
+      corruptFormData.append('video', new Blob([Buffer.alloc(0)], { type: 'video/mp4' }), 'corrupt.mp4');
+      const corruptRes = await fetch(`${baseUrl}/api/render-download-cut`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${userToken}` },
+        body: corruptFormData,
+      });
+      assert.equal(corruptRes.status, 400);
+
+      // 3. Per-user rate limiting: sending 15 rapid upload requests with userToken triggers 429
+      let hit429 = false;
+      for (let i = 0; i < 15; i++) {
+        const rapidFormData = new FormData();
+        rapidFormData.append('video', new Blob(['test-rate-limit'], { type: 'video/mp4' }), 'rapid.mp4');
+        const rapidRes = await fetch(`${baseUrl}/api/render-download-cut`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${userToken}`,
+            'X-Forwarded-For': `10.0.0.${i + 1}`, // Rotating IPs must NOT bypass per-user rate limit!
+          },
+          body: rapidFormData,
+        });
+        if (rapidRes.status === 429) {
+          hit429 = true;
+          break;
+        }
+      }
+      assert.ok(hit429, 'Rapid requests from the same user must be throttled with 429 despite rotating IPs');
+    });
+  } finally {
+    if (fs.existsSync(corruptFile)) fs.unlinkSync(corruptFile);
   }
 });
