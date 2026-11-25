@@ -112,6 +112,7 @@ export interface BatchRenderJob {
   completedItems: number;
   failedItems: number;
   itemIds: string[];
+  clipData?: Record<string, { previewUrl?: string; downloadUrl?: string; fileSize?: number; error?: string; code?: string }>;
   zipDownloadUrl?: string;
   error?: string;
   createdAt: string;

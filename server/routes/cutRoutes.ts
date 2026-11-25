@@ -3,23 +3,18 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import fsPromises from 'fs/promises';
-
-async function checkFileExists(filePath: string): Promise<boolean> {
-  try {
-    await fsPromises.access(filePath);
-    return true;
-  } catch {
-    return false;
-  }
-}
 import crypto from 'crypto';
-import { UPLOADS_DIR, TEMP_DIR, CLIPS_DIR } from '../config.js';
-import { renderRealCutVideo, downloadAndProcessYouTubeCut, downloadYouTubeSlice } from '../services/ffmpegService.js';
+import { UPLOADS_DIR, TEMP_DIR, CLIPS_DIR, BATCH_SOURCES_DIR } from '../config.js';
+import { downloadYouTubeSlice, fetchYouTubeVideoDuration, YouTubeSliceMetadata } from '../services/ffmpegService.js';
 import { renderClip, validateMediaFile } from '../services/renderService.js';
-import { parseTimeToSeconds, formatSecondsToMMSS } from '../services/geminiService.js';
-import { jobQueue, validateBatchCutsArray } from '../services/jobQueueService.js';
+import { jobQueue, validateBatchCutsArray, computeClipParamsHash } from '../services/jobQueueService.js';
 import { sanitizeFileName } from '../services/zipService.js';
-import { uploadVideoToYouTube } from '../services/youtubeService.js';
+import {
+  uploadVideoToYouTube,
+  ALLOWED_YOUTUBE_PRIVACY,
+  MAX_YOUTUBE_TITLE_LENGTH,
+  MAX_YOUTUBE_DESCRIPTION_LENGTH,
+} from '../services/youtubeService.js';
 import { stateManager } from '../services/stateService.js';
 import {
   createRateLimiter,
@@ -30,9 +25,22 @@ import {
   parseHttpRange,
   getUploadedFileOwner,
   registerUploadedFile,
+  parseTimeToSeconds,
+  formatSecondsToTimestamp,
 } from '../middleware/security.js';
+import { AppError, sendErrorResponse, getCorrelationId } from '../utils/errors.js';
+import { logger } from '../utils/logger.js';
 
 export const cutRouter = Router();
+
+async function checkFileExists(filePath: string): Promise<boolean> {
+  try {
+    await fsPromises.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const ALLOWED_VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v']);
 const MAX_UPLOAD_DURATION_SEC = 7200; // 2 hours
@@ -105,9 +113,9 @@ export async function getUserUploadStorageBytes(userId: string): Promise<number>
 export async function validateUploadedFile(
   file: Express.Multer.File,
   userId: string
-): Promise<{ valid: boolean; error?: string; status?: number }> {
+): Promise<{ valid: boolean; error?: string; status?: number; code?: AppError['code']; duration?: number }> {
   if (!file || !isPathInsideDir(file.path, UPLOADS_DIR)) {
-    return { valid: false, error: 'Arquivo de vídeo inválido.', status: 400 };
+    return { valid: false, error: 'Arquivo de vídeo inválido.', status: 400, code: 'INVALID_MEDIA' };
   }
 
   // 1. Quota check
@@ -117,6 +125,7 @@ export async function validateUploadedFile(
       valid: false,
       error: 'Cota de armazenamento de upload excedida (máximo de 1GB por usuário).',
       status: 413,
+      code: 'STORAGE_FULL',
     };
   }
 
@@ -127,6 +136,7 @@ export async function validateUploadedFile(
       valid: false,
       error: probe.error || 'Arquivo de vídeo inválido ou sem stream de vídeo detectado.',
       status: 400,
+      code: 'INVALID_MEDIA',
     };
   }
 
@@ -136,6 +146,7 @@ export async function validateUploadedFile(
       valid: false,
       error: `A duração do vídeo (${Math.round(probe.duration)}s) excede o limite máximo permitido de ${MAX_UPLOAD_DURATION_SEC}s.`,
       status: 400,
+      code: 'INVALID_MEDIA',
     };
   }
 
@@ -145,30 +156,72 @@ export async function validateUploadedFile(
       valid: false,
       error: `A resolução do vídeo (${probe.width}x${probe.height}) excede o limite de ${MAX_UPLOAD_RESOLUTION}x${MAX_UPLOAD_RESOLUTION}.`,
       status: 400,
+      code: 'INVALID_MEDIA',
     };
   }
 
   registerUploadedFile(file.path, userId);
+  return { valid: true, duration: probe.duration };
+}
+
+function validateTitleAndDescriptionAndPrivacy({
+  title,
+  description,
+  privacy,
+  requirePrivacy = false,
+}: {
+  title?: unknown;
+  description?: unknown;
+  privacy?: unknown;
+  requirePrivacy?: boolean;
+}): { valid: boolean; error?: string; code?: AppError['code'] } {
+  if (title !== undefined && title !== null) {
+    const t = String(title).trim();
+    if (t.length > MAX_YOUTUBE_TITLE_LENGTH) {
+      return {
+        valid: false,
+        code: 'INVALID_CUT_INTERVAL',
+        error: `O título não pode exceder ${MAX_YOUTUBE_TITLE_LENGTH} caracteres (atual: ${t.length}).`,
+      };
+    }
+  }
+
+  if (description !== undefined && description !== null) {
+    const d = String(description);
+    if (d.length > MAX_YOUTUBE_DESCRIPTION_LENGTH) {
+      return {
+        valid: false,
+        code: 'INVALID_CUT_INTERVAL',
+        error: `A descrição não pode exceder ${MAX_YOUTUBE_DESCRIPTION_LENGTH} caracteres (atual: ${d.length}).`,
+      };
+    }
+  }
+
+  if (requirePrivacy || (privacy !== undefined && privacy !== null && String(privacy).trim() !== '')) {
+    const cleanPrivacy = String(privacy ?? '').trim().toLowerCase();
+    if (!ALLOWED_YOUTUBE_PRIVACY.has(cleanPrivacy)) {
+      return {
+        valid: false,
+        code: 'INVALID_CUT_INTERVAL',
+        error: 'Privacidade inválida. Aceito somente: public, unlisted ou private.',
+      };
+    }
+  }
+
   return { valid: true };
 }
 
-function handleRouteError(res: Response, err: any, context: string) {
-  const correlationId = crypto.randomUUID();
-  console.error(`[CutRoutes][${context}][${correlationId}]:`, err);
-  const errMsg = err?.message || '';
-  const isBotError =
-    errMsg.includes('Sign in to confirm you’re not a bot') ||
-    errMsg.includes('cookies') ||
-    errMsg.includes('confirm you’re not a bot');
-  const userError = isBotError
-    ? 'O YouTube solicitou confirmação de acesso no servidor em nuvem. Salve seus cookies do YouTube na Central de Conexões ou envie o arquivo diretamente na aba Upload de Vídeo.'
-    : err?.message || 'Falha interna ao processar o vídeo. Tente novamente em instantes.';
-
-  return res.status(500).json({
-    error: userError,
-    isBotError,
-    correlationId,
-  });
+function parseJsonField<T>(value: any): T | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value === 'object') return value as T;
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value) as T;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
 }
 
 // 1. Render Specific Clip to CLIPS_DIR and register with JobQueue
@@ -178,19 +231,6 @@ cutRouter.post('/clips/:clipId/render', renderRateLimiter, async (req: Request, 
   let shouldCleanupSource = false;
 
   try {
-    const existing = jobQueue.getRenderedClip(clipId);
-    if (existing && (await checkFileExists(existing.filePath))) {
-      return res.json({
-        success: true,
-        clipId,
-        status: 'completed',
-        previewUrl: `/api/clips/${clipId}/preview`,
-        downloadUrl: `/api/clips/${clipId}/download`,
-        fileSize: existing.fileSize,
-        duration: existing.duration,
-      });
-    }
-
     const {
       videoUrl,
       sourceFilePath,
@@ -202,48 +242,196 @@ cutRouter.post('/clips/:clipId/render', renderRateLimiter, async (req: Request, 
       hook = '',
       framing,
       subtitles,
+      transcriptSegments,
+      teaserOffsetSec,
+      teaserDurationSec,
+      teaserText,
       removeSilence = false,
     } = req.body;
+
+    const metaVal = validateTitleAndDescriptionAndPrivacy({ title });
+    if (!metaVal.valid) {
+      return sendErrorResponse(
+        res,
+        new AppError({ code: metaVal.code || 'INVALID_CUT_INTERVAL', statusCode: 400, userMessage: metaVal.error! }),
+        'clips-render',
+        { userId: req.userId }
+      );
+    }
+
+    const intervalCheck = validateCutInterval(startTime, endTime, 300);
+    if (!intervalCheck.valid) {
+      return sendErrorResponse(
+        res,
+        new AppError({
+          code: 'INVALID_CUT_INTERVAL',
+          statusCode: 400,
+          userMessage: intervalCheck.error || 'Intervalo de tempo inválido.',
+        }),
+        'clips-render',
+        { userId: req.userId }
+      );
+    }
+
+    const paramsHash = computeClipParamsHash({
+      videoUrl,
+      sourceFilePath,
+      startTime: intervalCheck.formattedStart,
+      endTime: intervalCheck.formattedEnd,
+      format,
+      subtitleTheme,
+      title,
+      hook,
+      framing,
+      subtitles,
+      teaserOffsetSec,
+      teaserDurationSec,
+      removeSilence: Boolean(removeSilence),
+    });
+
+    // Enforce owner match AND parameter hash match on cache hit
+    const existing = jobQueue.getRenderedClipForUser(clipId, req.userId);
+    if (existing && existing.paramsHash && existing.paramsHash === paramsHash && (await checkFileExists(existing.filePath))) {
+      return res.json({
+        success: true,
+        clipId,
+        status: 'completed',
+        previewUrl: `/api/clips/${clipId}/preview`,
+        downloadUrl: `/api/clips/${clipId}/download`,
+        fileSize: existing.fileSize,
+        duration: existing.duration,
+      });
+    }
+
+    let sliceMeta: YouTubeSliceMetadata | null = null;
+    const cleanStart = intervalCheck.formattedStart!;
+    const cleanEnd = intervalCheck.formattedEnd!;
 
     // Resolve source video
     if (sourceFilePath) {
       if (!isPathInsideDir(sourceFilePath, UPLOADS_DIR)) {
-        return res.status(403).json({ error: 'Acesso negado: caminho de arquivo fora do diretório de uploads.' });
+        return sendErrorResponse(
+          res,
+          new AppError({
+            code: 'INVALID_MEDIA',
+            statusCode: 403,
+            userMessage: 'Acesso negado: caminho de arquivo fora do diretório de uploads.',
+          }),
+          'clips-render',
+          { userId: req.userId }
+        );
       }
       const owner = getUploadedFileOwner(sourceFilePath);
       if (!owner || !req.userId || owner !== req.userId) {
-        return res.status(404).json({ error: 'Arquivo de vídeo não encontrado.' });
+        return sendErrorResponse(
+          res,
+          new AppError({
+            code: 'INVALID_MEDIA',
+            statusCode: 404,
+            userMessage: 'Arquivo de vídeo não encontrado.',
+          }),
+          'clips-render',
+          { userId: req.userId }
+        );
       }
       if (!(await checkFileExists(sourceFilePath))) {
-        return res.status(404).json({ error: 'Arquivo de vídeo não encontrado no disco.' });
+        return sendErrorResponse(
+          res,
+          new AppError({
+            code: 'INVALID_MEDIA',
+            statusCode: 404,
+            userMessage: 'Arquivo de vídeo não encontrado no disco.',
+          }),
+          'clips-render',
+          { userId: req.userId }
+        );
       }
+
+      const localProbe = await validateMediaFile(sourceFilePath);
+      if (!localProbe.valid || !localProbe.hasVideo) {
+        return sendErrorResponse(
+          res,
+          new AppError({
+            code: 'INVALID_MEDIA',
+            statusCode: 400,
+            userMessage: localProbe.error || 'Arquivo de vídeo local inválido.',
+          }),
+          'clips-render',
+          { userId: req.userId }
+        );
+      }
+      if (intervalCheck.endSec! > localProbe.duration) {
+        return sendErrorResponse(
+          res,
+          new AppError({
+            code: 'INVALID_CUT_INTERVAL',
+            statusCode: 400,
+            userMessage: `O tempo final (${cleanEnd}) excede a duração real do vídeo (${formatSecondsToTimestamp(localProbe.duration)}).`,
+          }),
+          'clips-render',
+          { userId: req.userId }
+        );
+      }
+
       rawSourcePath = sourceFilePath;
     } else if (videoUrl) {
       const safeYt = normalizeSafeYouTubeUrl(videoUrl);
       if (!safeYt) {
-        return res.status(400).json({ error: 'URL do YouTube inválida ou bloqueada.' });
+        return sendErrorResponse(
+          res,
+          new AppError({
+            code: 'YOUTUBE_DOWNLOAD_FAILED',
+            statusCode: 400,
+            userMessage: 'URL do YouTube inválida ou bloqueada.',
+          }),
+          'clips-render',
+          { userId: req.userId }
+        );
       }
-      rawSourcePath = await downloadYouTubeSlice({
+      sliceMeta = await downloadYouTubeSlice({
         videoUrl: safeYt.canonicalUrl,
-        startTime: sanitizeTimestamp(startTime, '00:00'),
-        endTime: sanitizeTimestamp(endTime, '00:30'),
+        startTime: cleanStart,
+        endTime: cleanEnd,
+        userId: req.userId,
       });
+      rawSourcePath = sliceMeta.filePath;
       shouldCleanupSource = true;
     } else {
-      return res.status(400).json({ error: 'Nenhum vídeo de origem fornecido (videoUrl ou sourceFilePath).' });
+      return sendErrorResponse(
+        res,
+        new AppError({
+          code: 'INVALID_MEDIA',
+          statusCode: 400,
+          userMessage: 'Nenhum vídeo de origem fornecido (videoUrl ou sourceFilePath).',
+        }),
+        'clips-render',
+        { userId: req.userId }
+      );
     }
 
     if (!rawSourcePath || !(await checkFileExists(rawSourcePath))) {
-      return res.status(400).json({ error: 'Falha ao obter o vídeo de origem para processamento.' });
+      return sendErrorResponse(
+        res,
+        new AppError({
+          code: 'INVALID_MEDIA',
+          statusCode: 400,
+          userMessage: 'Falha ao obter o vídeo de origem para processamento.',
+        }),
+        'clips-render',
+        { userId: req.userId }
+      );
     }
 
     const targetOutPath = path.join(CLIPS_DIR, `${clipId}.mp4`);
+    const requestedDur = Math.max(1, intervalCheck.endSec! - intervalCheck.startSec!);
+    const effectiveSliceDuration = sliceMeta ? Math.min(requestedDur, sliceMeta.duration) : undefined;
+
     const renderResult = await renderClip({
       sourcePath: rawSourcePath,
-      startTime: shouldCleanupSource ? '00:00' : startTime,
-      endTime: shouldCleanupSource
-        ? formatSecondsToMMSS(parseTimeToSeconds(endTime) - parseTimeToSeconds(startTime))
-        : endTime,
+      startTime: sliceMeta ? '00:00' : cleanStart,
+      endTime: sliceMeta ? formatSecondsToTimestamp(Math.ceil(effectiveSliceDuration!)) : cleanEnd,
+      durationOverrideSec: effectiveSliceDuration,
+      originalCutStartSec: intervalCheck.startSec!,
       clipId,
       outputPath: targetOutPath,
       format,
@@ -252,10 +440,21 @@ cutRouter.post('/clips/:clipId/render', renderRateLimiter, async (req: Request, 
       hook,
       framing,
       subtitles: Array.isArray(subtitles) ? subtitles : undefined,
+      transcriptSegments: Array.isArray(transcriptSegments) ? transcriptSegments : undefined,
+      teaserOffsetSec,
+      teaserDurationSec,
+      teaserText,
       removeSilence: Boolean(removeSilence),
     });
 
-    jobQueue.registerRenderedClip(clipId, renderResult.outputPath, renderResult.duration, renderResult.fileSize, req.userId);
+    jobQueue.registerRenderedClip(
+      clipId,
+      renderResult.outputPath,
+      renderResult.duration,
+      renderResult.fileSize,
+      req.userId,
+      paramsHash
+    );
 
     return res.json({
       success: true,
@@ -267,9 +466,10 @@ cutRouter.post('/clips/:clipId/render', renderRateLimiter, async (req: Request, 
       duration: renderResult.duration,
       width: renderResult.width,
       height: renderResult.height,
+      hasAudio: renderResult.hasAudio,
     });
   } catch (err: any) {
-    return handleRouteError(res, err, 'clips-render');
+    return sendErrorResponse(res, err, 'clips-render', { userId: req.userId });
   } finally {
     if (shouldCleanupSource && rawSourcePath) {
       await fsPromises.unlink(rawSourcePath).catch(() => {});
@@ -277,19 +477,33 @@ cutRouter.post('/clips/:clipId/render', renderRateLimiter, async (req: Request, 
   }
 });
 
-// 2. Stream Rendered MP4 Preview with HTTP 206 Range Support (zero gray screen, instant HTML5 seek)
+// 2. Stream Rendered MP4 Preview with HTTP 206 Range Support (strict metadata + ownership only, zero path fallback)
 cutRouter.get('/clips/:clipId/preview', async (req: Request, res: Response) => {
   const clipId = String(req.params.clipId).replace(/[^a-zA-Z0-9_-]/g, '_');
-  const clipMeta = jobQueue.getRenderedClip(clipId);
-  const filePath = clipMeta?.filePath || path.join(CLIPS_DIR, `${clipId}.mp4`);
+  const clipMeta = jobQueue.getRenderedClipForUser(clipId, req.userId);
 
-  if (!clipMeta || !clipMeta.userId || !req.userId || clipMeta.userId !== req.userId) {
-    return res.status(404).json({ error: 'Corte não encontrado.' });
+  if (!clipMeta || !clipMeta.filePath) {
+    return res.status(404).json({
+      error: 'Corte não encontrado.',
+      code: 'JOB_NOT_FOUND',
+      correlationId: getCorrelationId(res),
+    });
+  }
+
+  const filePath = clipMeta.filePath;
+  if (!isPathInsideDir(filePath, CLIPS_DIR) && !isPathInsideDir(filePath, TEMP_DIR)) {
+    return res.status(404).json({
+      error: 'Corte não encontrado.',
+      code: 'JOB_NOT_FOUND',
+      correlationId: getCorrelationId(res),
+    });
   }
 
   if (!(await checkFileExists(filePath))) {
     return res.status(404).json({
       error: 'Corte ainda não foi renderizado ou expirou.',
+      code: 'JOB_NOT_FOUND',
+      correlationId: getCorrelationId(res),
       clipId,
       status: 'pending',
     });
@@ -325,66 +539,245 @@ cutRouter.get('/clips/:clipId/preview', async (req: Request, res: Response) => {
   }
 });
 
-// 3. Download Single Rendered Cut MP4
+// 3. Download Single Rendered Cut MP4 (strict metadata + ownership only, zero path fallback)
 cutRouter.get('/clips/:clipId/download', async (req: Request, res: Response) => {
   const clipId = String(req.params.clipId).replace(/[^a-zA-Z0-9_-]/g, '_');
-  const clipMeta = jobQueue.getRenderedClip(clipId);
-  const filePath = clipMeta?.filePath || path.join(CLIPS_DIR, `${clipId}.mp4`);
+  const clipMeta = jobQueue.getRenderedClipForUser(clipId, req.userId);
 
-  if (!clipMeta || !clipMeta.userId || !req.userId || clipMeta.userId !== req.userId) {
-    return res.status(404).json({ error: 'Arquivo do corte não encontrado para download.' });
+  if (!clipMeta || !clipMeta.filePath) {
+    return res.status(404).json({
+      error: 'Arquivo do corte não encontrado para download.',
+      code: 'JOB_NOT_FOUND',
+      correlationId: getCorrelationId(res),
+    });
+  }
+
+  const filePath = clipMeta.filePath;
+  if (!isPathInsideDir(filePath, CLIPS_DIR) && !isPathInsideDir(filePath, TEMP_DIR)) {
+    return res.status(404).json({
+      error: 'Arquivo do corte não encontrado para download.',
+      code: 'JOB_NOT_FOUND',
+      correlationId: getCorrelationId(res),
+    });
   }
 
   if (!(await checkFileExists(filePath))) {
-    return res.status(404).json({ error: 'Arquivo do corte não encontrado para download.' });
+    return res.status(404).json({
+      error: 'Arquivo do corte não encontrado para download.',
+      code: 'JOB_NOT_FOUND',
+      correlationId: getCorrelationId(res),
+    });
   }
 
   const fileName = `${sanitizeFileName(clipId)}.mp4`;
   res.download(filePath, fileName);
 });
 
-// 4. Batch Render Multiple Cuts
+// 4. Batch Render Multiple Cuts (persists source in BATCH_SOURCES_DIR and validates every cut against real video duration)
 cutRouter.post('/batch/render', renderRateLimiter, async (req: Request, res: Response) => {
+  let persistedBatchSource: string | null = null;
+  let jobCreated = false;
+
   try {
     const { cuts, videoUrl, sourceFilePath } = req.body;
     if (!Array.isArray(cuts) || cuts.length === 0 || cuts.length > 20) {
-      return res.status(400).json({ error: 'Nenhum corte selecionado para renderização em lote.' });
+      return sendErrorResponse(
+        res,
+        new AppError({
+          code: 'INVALID_CUT_INTERVAL',
+          statusCode: 400,
+          userMessage: 'Selecione entre 1 e 20 cortes válidos para renderização em lote.',
+        }),
+        'batch-render',
+        { userId: req.userId }
+      );
     }
+
     const cutsValidation = validateBatchCutsArray(cuts);
     if (!cutsValidation.valid || !cutsValidation.sanitizedCuts) {
-      return res.status(400).json({ error: cutsValidation.error || 'Cortes inválidos.' });
+      return sendErrorResponse(
+        res,
+        new AppError({
+          code: 'INVALID_CUT_INTERVAL',
+          statusCode: 400,
+          userMessage: cutsValidation.error || 'Cortes inválidos no lote.',
+        }),
+        'batch-render',
+        { userId: req.userId }
+      );
     }
     const validatedCuts = cutsValidation.sanitizedCuts;
 
-    let sourcePathToUse = sourceFilePath;
-    if (sourcePathToUse) {
-      if (!isPathInsideDir(sourcePathToUse, UPLOADS_DIR)) {
-        return res.status(403).json({ error: 'Acesso negado: caminho de arquivo fora do diretório de uploads.' });
-      }
-      const owner = getUploadedFileOwner(sourcePathToUse);
-      if (!owner || !req.userId || owner !== req.userId) {
-        return res.status(404).json({ error: 'Arquivo de vídeo não encontrado.' });
-      }
-    }
+    let sourceOffsetSec = 0;
+    let sourceDurationSec = 0;
 
-    if (!sourcePathToUse || !(await checkFileExists(sourcePathToUse))) {
+    if (sourceFilePath) {
+      if (!isPathInsideDir(sourceFilePath, UPLOADS_DIR)) {
+        return sendErrorResponse(
+          res,
+          new AppError({
+            code: 'INVALID_MEDIA',
+            statusCode: 403,
+            userMessage: 'Acesso negado: caminho de arquivo fora do diretório de uploads.',
+          }),
+          'batch-render',
+          { userId: req.userId }
+        );
+      }
+      const owner = getUploadedFileOwner(sourceFilePath);
+      if (!owner || !req.userId || owner !== req.userId) {
+        return sendErrorResponse(
+          res,
+          new AppError({
+            code: 'INVALID_MEDIA',
+            statusCode: 404,
+            userMessage: 'Arquivo de vídeo não encontrado.',
+          }),
+          'batch-render',
+          { userId: req.userId }
+        );
+      }
+      if (!(await checkFileExists(sourceFilePath))) {
+        return sendErrorResponse(
+          res,
+          new AppError({
+            code: 'INVALID_MEDIA',
+            statusCode: 404,
+            userMessage: 'Arquivo de vídeo local não encontrado no disco.',
+          }),
+          'batch-render',
+          { userId: req.userId }
+        );
+      }
+
+      // Validate real duration of local source video BEFORE accepting batch cuts
+      const sourceProbe = await validateMediaFile(sourceFilePath);
+      if (!sourceProbe.valid || !sourceProbe.hasVideo) {
+        return sendErrorResponse(
+          res,
+          new AppError({
+            code: 'INVALID_MEDIA',
+            statusCode: 400,
+            userMessage: sourceProbe.error || 'Arquivo de vídeo local inválido.',
+          }),
+          'batch-render',
+          { userId: req.userId }
+        );
+      }
+
+      for (const cut of validatedCuts) {
+        if (cut.endSeconds > sourceProbe.duration) {
+          return sendErrorResponse(
+            res,
+            new AppError({
+              code: 'INVALID_CUT_INTERVAL',
+              statusCode: 400,
+              userMessage: `O corte "${cut.title}" termina em ${cut.endTime}, excedendo a duração real do vídeo (${formatSecondsToTimestamp(sourceProbe.duration)}).`,
+            }),
+            'batch-render',
+            { userId: req.userId }
+          );
+        }
+      }
+
+      // Persist independent batch source copy so temp/upload cleanups never break an active job
+      const ext = path.extname(sourceFilePath).toLowerCase() || '.mp4';
+      persistedBatchSource = path.join(
+        BATCH_SOURCES_DIR,
+        `batch_src_${Date.now()}_${crypto.randomBytes(6).toString('hex')}${ext}`
+      );
+      await fsPromises.copyFile(sourceFilePath, persistedBatchSource);
+      sourceDurationSec = sourceProbe.duration;
+      sourceOffsetSec = 0;
+    } else {
       const safeYt = normalizeSafeYouTubeUrl(videoUrl);
       if (!safeYt) {
-        return res.status(400).json({ error: 'URL do YouTube ou arquivo de vídeo local obrigatório.' });
+        return sendErrorResponse(
+          res,
+          new AppError({
+            code: 'YOUTUBE_DOWNLOAD_FAILED',
+            statusCode: 400,
+            userMessage: 'URL do YouTube ou arquivo de vídeo local obrigatório.',
+          }),
+          'batch-render',
+          { userId: req.userId }
+        );
       }
-      // Download raw slice spanning from earliest cut to latest cut
-      const minStart = Math.min(...validatedCuts.map((c) => c.startSeconds || 0));
-      const maxEnd = Math.max(...validatedCuts.map((c) => c.endSeconds || c.startSeconds + 45));
-      sourcePathToUse = await downloadYouTubeSlice({
+
+      // Validate real duration of YouTube video BEFORE accepting batch cuts
+      const ytDuration = await fetchYouTubeVideoDuration(safeYt.canonicalUrl, req.userId);
+      if (ytDuration && ytDuration > 0) {
+        for (const cut of validatedCuts) {
+          if (cut.endSeconds > ytDuration) {
+            return sendErrorResponse(
+              res,
+              new AppError({
+                code: 'INVALID_CUT_INTERVAL',
+                statusCode: 400,
+                userMessage: `O corte "${cut.title}" termina em ${cut.endTime}, excedendo a duração real do vídeo (${formatSecondsToTimestamp(ytDuration)}).`,
+              }),
+              'batch-render',
+              { userId: req.userId }
+            );
+          }
+        }
+      }
+
+      const minStart = Math.min(...validatedCuts.map((c) => Number(c.startSeconds ?? 0)));
+      const maxEnd = Math.max(...validatedCuts.map((c) => Number(c.endSeconds ?? c.startSeconds + 45)));
+      const spanSeconds = Math.max(3, maxEnd - minStart);
+
+      const sliceMeta = await downloadYouTubeSlice({
         videoUrl: safeYt.canonicalUrl,
-        startTime: formatSecondsToMMSS(minStart),
-        endTime: formatSecondsToMMSS(maxEnd),
+        startTime: formatSecondsToTimestamp(minStart),
+        endTime: formatSecondsToTimestamp(maxEnd),
         userId: req.userId,
+        maxIntervalSeconds: Math.max(300, Math.min(3600, spanSeconds + 10)),
+        knownVideoDurationSec: ytDuration ?? undefined,
       });
+
+      // Validate cuts against the real downloaded slice duration
+      for (const cut of validatedCuts) {
+        const relEnd = cut.endSeconds - minStart;
+        if (relEnd > sliceMeta.duration + 0.5) {
+          await fsPromises.unlink(sliceMeta.filePath).catch(() => {});
+          return sendErrorResponse(
+            res,
+            new AppError({
+              code: 'INVALID_CUT_INTERVAL',
+              statusCode: 400,
+              userMessage: `O corte "${cut.title}" ultrapassa a duração real disponível do trecho baixado (${formatSecondsToTimestamp(minStart + sliceMeta.duration)}).`,
+            }),
+            'batch-render',
+            { userId: req.userId }
+          );
+        }
+      }
+
+      // Move downloaded slice into persistent BATCH_SOURCES_DIR so TEMP_DIR cleanup never deletes it mid-job
+      persistedBatchSource = path.join(
+        BATCH_SOURCES_DIR,
+        `batch_src_${Date.now()}_${crypto.randomBytes(6).toString('hex')}.mp4`
+      );
+      try {
+        await fsPromises.rename(sliceMeta.filePath, persistedBatchSource);
+      } catch {
+        await fsPromises.copyFile(sliceMeta.filePath, persistedBatchSource);
+        await fsPromises.unlink(sliceMeta.filePath).catch(() => {});
+      }
+
+      sourceOffsetSec = minStart;
+      sourceDurationSec = sliceMeta.duration;
     }
 
-    const task = jobQueue.createBatchRenderJob(validatedCuts, sourcePathToUse, req.userId);
-    res.json({
+    const task = jobQueue.createBatchRenderJob(validatedCuts, persistedBatchSource, req.userId, {
+      sourceOffsetSec,
+      sourceDurationSec,
+      ownsSourceFile: true,
+    });
+    jobCreated = true;
+
+    return res.json({
       success: true,
       jobId: task.id,
       status: task.status,
@@ -392,29 +785,84 @@ cutRouter.post('/batch/render', renderRateLimiter, async (req: Request, res: Res
       message: `Fila de renderização iniciada para ${task.totalItems} corte(s).`,
     });
   } catch (err: any) {
-    return handleRouteError(res, err, 'batch-render');
+    if (!jobCreated && persistedBatchSource) {
+      await fsPromises.unlink(persistedBatchSource).catch(() => {});
+    }
+    return sendErrorResponse(res, err, 'batch-render', { userId: req.userId });
   }
 });
 
-// 5. Query Batch Job Status
+// 5. Query Batch Job Status (strict owner isolation)
 cutRouter.get('/batch/:batchId', (req: Request, res: Response) => {
   const jobId = req.params.batchId;
-  const job = jobQueue.getJob(jobId) || jobQueue.get(jobId);
-  if (!job || !job.userId || !req.userId || job.userId !== req.userId) {
-    return res.status(404).json({ error: 'Tarefa não encontrada.' });
+  const job = jobQueue.getJobForUser(jobId, req.userId);
+  if (!job) {
+    return res.status(404).json({
+      error: 'Tarefa não encontrada.',
+      code: 'JOB_NOT_FOUND',
+      correlationId: getCorrelationId(res),
+    });
   }
-  res.json(job);
+  return res.json(job);
 });
 
-// 6. Cancel Batch Job
+// 6. Cancel Batch Job (differentiates not_found, already_completed, already_cancelled, cannot_cancel)
 cutRouter.post('/batch/:batchId/cancel', (req: Request, res: Response) => {
   const jobId = req.params.batchId;
-  const job = jobQueue.getJob(jobId) || jobQueue.get(jobId);
-  if (!job || !job.userId || !req.userId || job.userId !== req.userId) {
-    return res.status(404).json({ error: 'Tarefa não encontrada.' });
+  const correlationId = getCorrelationId(res);
+  const result = jobQueue.cancelJobDetailed(jobId, req.userId);
+
+  if (result.reason === 'not_found') {
+    return res.status(404).json({
+      success: false,
+      reason: 'not_found',
+      code: 'JOB_NOT_FOUND',
+      error: 'Tarefa não encontrada.',
+      message: 'Tarefa não encontrada.',
+      correlationId,
+    });
   }
-  const success = jobQueue.cancelJob(jobId);
-  res.json({ success, message: success ? 'Tarefa cancelada com sucesso.' : 'Tarefa não encontrada.' });
+
+  if (result.reason === 'already_completed') {
+    return res.status(409).json({
+      success: false,
+      reason: 'already_completed',
+      code: 'JOB_CANNOT_CANCEL',
+      error: 'A tarefa já foi concluída e não pode ser cancelada.',
+      message: 'A tarefa já foi concluída e não pode ser cancelada.',
+      correlationId,
+    });
+  }
+
+  if (result.reason === 'already_cancelled') {
+    return res.status(409).json({
+      success: false,
+      reason: 'already_cancelled',
+      code: 'JOB_CANNOT_CANCEL',
+      error: 'A tarefa já foi cancelada anteriormente.',
+      message: 'A tarefa já foi cancelada anteriormente.',
+      correlationId,
+    });
+  }
+
+  if (result.reason === 'cannot_cancel') {
+    return res.status(409).json({
+      success: false,
+      reason: 'cannot_cancel',
+      code: 'JOB_CANNOT_CANCEL',
+      error: 'A tarefa está em um estado final que não permite cancelamento.',
+      message: 'A tarefa está em um estado final que não permite cancelamento.',
+      correlationId,
+    });
+  }
+
+  return res.json({
+    success: true,
+    reason: 'cancelled',
+    status: 'cancelled',
+    message: 'Tarefa cancelada com sucesso.',
+    correlationId,
+  });
 });
 
 // 7. Enqueue Bulk ZIP Generation (Selected Cuts or All)
@@ -422,11 +870,20 @@ cutRouter.post('/clips/bulk-download', async (req: Request, res: Response) => {
   try {
     const { cuts, videoTitle } = req.body;
     if (!Array.isArray(cuts) || cuts.length === 0) {
-      return res.status(400).json({ error: 'Nenhum corte fornecido para empacotamento em ZIP.' });
+      return sendErrorResponse(
+        res,
+        new AppError({
+          code: 'INVALID_CUT_INTERVAL',
+          statusCode: 400,
+          userMessage: 'Nenhum corte fornecido para empacotamento em ZIP.',
+        }),
+        'bulk-download',
+        { userId: req.userId }
+      );
     }
 
     const task = jobQueue.createBatchZipJob(cuts, videoTitle, req.userId);
-    res.json({
+    return res.json({
       success: true,
       jobId: task.id,
       status: task.status,
@@ -434,32 +891,40 @@ cutRouter.post('/clips/bulk-download', async (req: Request, res: Response) => {
       message: `Empacotamento ZIP iniciado para ${task.totalItems} corte(s).`,
     });
   } catch (err: any) {
-    return handleRouteError(res, err, 'bulk-download');
+    return sendErrorResponse(res, err, 'bulk-download', { userId: req.userId });
   }
 });
 
-// 8. Download Completed ZIP File
+// 8. Download Completed ZIP File (strict owner isolation + exact deterministic ZIP path)
 cutRouter.get('/batch/:batchId/download', async (req: Request, res: Response) => {
-  const jobId = req.params.batchId;
-  const job = jobQueue.getJob(jobId) || jobQueue.get(jobId);
-  if (!job || !job.userId || !req.userId || job.userId !== req.userId) {
-    return res.status(404).json({ error: 'Arquivo ZIP não encontrado.' });
+  const jobId = String(req.params.batchId).replace(/[^a-zA-Z0-9_-]/g, '_');
+  const job = jobQueue.getJobForUser(jobId, req.userId);
+  if (!job) {
+    return res.status(404).json({
+      error: 'Arquivo ZIP não encontrado.',
+      code: 'JOB_NOT_FOUND',
+      correlationId: getCorrelationId(res),
+    });
   }
 
-  // Exact deterministic ZIP lookup (no substring scanning to prevent collisions or traversal)
   const zipName = `batch_${jobId}.zip`;
-  const zipPath = path.join(TEMP_DIR, zipName);
+  const zipPath = job.zipPath && isPathInsideDir(job.zipPath, TEMP_DIR) ? job.zipPath : path.join(TEMP_DIR, zipName);
 
-  if (!(await checkFileExists(zipPath)) || !isPathInsideDir(zipPath, TEMP_DIR)) {
-    return res.status(404).json({ error: 'Arquivo ZIP ainda não está pronto ou expirou.' });
+  if (!isPathInsideDir(zipPath, TEMP_DIR) || !(await checkFileExists(zipPath))) {
+    return res.status(404).json({
+      error: 'Arquivo ZIP ainda não está pronto ou expirou.',
+      code: 'JOB_NOT_FOUND',
+      correlationId: getCorrelationId(res),
+    });
   }
 
   res.setHeader('Content-Type', 'application/zip');
-  res.download(zipPath, zipName);
+  return res.download(zipPath, zipName);
 });
 
-// 9. Legacy /download-youtube-cut with persistent CLIPS_DIR output
+// 9. Legacy /download-youtube-cut with real slice metadata and persistent CLIPS_DIR output
 cutRouter.post('/download-youtube-cut', renderRateLimiter, async (req: Request, res: Response) => {
+  let rawSlicePath: string | null = null;
   try {
     const {
       videoUrl,
@@ -471,37 +936,81 @@ cutRouter.post('/download-youtube-cut', renderRateLimiter, async (req: Request, 
       hook = '',
       framing,
       subtitles,
+      transcriptSegments,
+      teaserOffsetSec,
+      teaserDurationSec,
+      teaserText,
       removeSilence = false,
     } = req.body;
 
+    const metaVal = validateTitleAndDescriptionAndPrivacy({ title });
+    if (!metaVal.valid) {
+      return sendErrorResponse(
+        res,
+        new AppError({ code: metaVal.code || 'INVALID_CUT_INTERVAL', statusCode: 400, userMessage: metaVal.error! }),
+        'download-youtube-cut',
+        { userId: req.userId }
+      );
+    }
+
     const safeYt = normalizeSafeYouTubeUrl(videoUrl);
     if (!safeYt) {
-      return res.status(400).json({ error: 'URL do YouTube inválida ou bloqueada.' });
+      return sendErrorResponse(
+        res,
+        new AppError({
+          code: 'YOUTUBE_DOWNLOAD_FAILED',
+          statusCode: 400,
+          userMessage: 'URL do YouTube inválida ou bloqueada.',
+        }),
+        'download-youtube-cut',
+        { userId: req.userId }
+      );
     }
 
     const intervalCheck = validateCutInterval(startTime, endTime, 300);
     if (!intervalCheck.valid) {
-      return res.status(400).json({ error: intervalCheck.error });
+      return sendErrorResponse(
+        res,
+        new AppError({
+          code: 'INVALID_CUT_INTERVAL',
+          statusCode: 400,
+          userMessage: intervalCheck.error || 'Intervalo de tempo inválido.',
+        }),
+        'download-youtube-cut',
+        { userId: req.userId }
+      );
     }
 
-    const cleanStart = sanitizeTimestamp(startTime, '00:00');
-    const cleanEnd = sanitizeTimestamp(endTime, '00:30');
+    const cleanStart = intervalCheck.formattedStart!;
+    const cleanEnd = intervalCheck.formattedEnd!;
 
-    console.log(`[CutRoutes] Corte direto do YouTube: ${safeYt.canonicalUrl} [${cleanStart} -> ${cleanEnd}]`);
+    logger.info('[CutRoutes] Corte direto do YouTube', {
+      action: 'download_youtube_cut',
+      videoId: safeYt.videoId,
+      startTime: cleanStart,
+      endTime: cleanEnd,
+      userId: req.userId,
+    });
 
-    const rawSlice = await downloadYouTubeSlice({
+    const sliceMeta = await downloadYouTubeSlice({
       videoUrl: safeYt.canonicalUrl,
       startTime: cleanStart,
       endTime: cleanEnd,
+      userId: req.userId,
     });
+    rawSlicePath = sliceMeta.filePath;
 
     const clipId = `cut_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
     const outPath = path.join(CLIPS_DIR, `${clipId}.mp4`);
+    const requestedDur = Math.max(1, intervalCheck.endSec! - intervalCheck.startSec!);
+    const effectiveDur = Math.min(requestedDur, sliceMeta.duration);
 
     const renderResult = await renderClip({
-      sourcePath: rawSlice,
+      sourcePath: sliceMeta.filePath,
       startTime: '00:00',
-      endTime: formatSecondsToMMSS(parseTimeToSeconds(cleanEnd) - parseTimeToSeconds(cleanStart)),
+      endTime: formatSecondsToTimestamp(Math.ceil(effectiveDur)),
+      durationOverrideSec: effectiveDur,
+      originalCutStartSec: intervalCheck.startSec!,
       clipId,
       outputPath: outPath,
       format,
@@ -510,85 +1019,202 @@ cutRouter.post('/download-youtube-cut', renderRateLimiter, async (req: Request, 
       hook,
       framing,
       subtitles: Array.isArray(subtitles) ? subtitles : undefined,
+      transcriptSegments: Array.isArray(transcriptSegments) ? transcriptSegments : undefined,
+      teaserOffsetSec,
+      teaserDurationSec,
+      teaserText,
       removeSilence: Boolean(removeSilence),
     });
-
-    // Cleanup intermediate raw slice
-    if (rawSlice) await fsPromises.unlink(rawSlice).catch(() => {});
 
     jobQueue.registerRenderedClip(clipId, renderResult.outputPath, renderResult.duration, renderResult.fileSize, req.userId);
 
     const safeTitle = (title || 'corte_viral').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 30);
-    res.download(outPath, `${safeTitle}.mp4`);
+    return res.download(outPath, `${safeTitle}.mp4`);
   } catch (err: any) {
-    return handleRouteError(res, err, 'download-youtube-cut');
+    return sendErrorResponse(res, err, 'download-youtube-cut', { userId: req.userId });
+  } finally {
+    if (rawSlicePath) {
+      await fsPromises.unlink(rawSlicePath).catch(() => {});
+    }
   }
 });
 
-// 10. Upload Local Video File, Cut with FFmpeg and Post to YouTube
+// 10. Upload Local Video File, Cut with FFmpeg, Register Clip BEFORE Publish, and Post to YouTube
+// Also supports retrying publish for an already-rendered clipId without re-rendering!
 cutRouter.post('/upload-and-cut-short', uploadRateLimiter, upload.single('video') as any, async (req: Request, res: Response) => {
-  let renderedPath: string | undefined;
+  const correlationId = getCorrelationId(res);
   try {
-    const file = req.file;
-    if (!file) {
-      return res.status(400).json({ error: 'Nenhum arquivo de vídeo válido foi enviado.' });
-    }
-
     if (!req.userId) {
-      if (file.path) await fsPromises.unlink(file.path).catch(() => {});
-      return res.status(401).json({ error: 'Acesso não autorizado. Faça login para continuar.' });
-    }
-
-    const validation = await validateUploadedFile(file, req.userId);
-    if (!validation.valid) {
-      if (file.path) await fsPromises.unlink(file.path).catch(() => {});
-      return res.status(validation.status || 400).json({ error: validation.error });
+      if (req.file?.path) await fsPromises.unlink(req.file.path).catch(() => {});
+      return res.status(401).json({
+        error: 'Acesso não autorizado. Faça login para continuar.',
+        code: 'YOUTUBE_UPLOAD_FAILED',
+        correlationId,
+      });
     }
 
     const {
+      clipId: requestedClipId,
       startTime = '00:00',
       endTime = '00:30',
       format = 'speaker_center',
+      subtitleTheme = 'none',
       title = 'Corte Viral #Shorts',
       description = '',
       privacy = 'public',
       tags = '',
       token = '',
+      refreshToken = '',
       hook = '',
       framing,
-    } = req.body;
+      removeSilence = false,
+    } = req.body || {};
 
-    const intervalCheck = validateCutInterval(startTime, endTime, 300);
-    if (!intervalCheck.valid) {
-      return res.status(400).json({ error: intervalCheck.error });
+    // Validate privacy, title (<=100), description (<=5000)
+    const metaCheck = validateTitleAndDescriptionAndPrivacy({
+      title,
+      description,
+      privacy,
+      requirePrivacy: true,
+    });
+    if (!metaCheck.valid) {
+      return sendErrorResponse(
+        res,
+        new AppError({ code: metaCheck.code || 'INVALID_CUT_INTERVAL', statusCode: 400, userMessage: metaCheck.error! }),
+        'upload-and-cut-short',
+        { userId: req.userId }
+      );
+    }
+
+    let clipId: string;
+    let renderedPath: string;
+    let previewUrl: string;
+    let downloadUrl: string;
+
+    const existingClipId = requestedClipId ? String(requestedClipId).replace(/[^a-zA-Z0-9_-]/g, '_') : '';
+    const existingRendered = existingClipId ? jobQueue.getRenderedClipForUser(existingClipId, req.userId) : null;
+
+    if (!req.file && existingRendered && (await checkFileExists(existingRendered.filePath))) {
+      // Retry publication without re-rendering!
+      clipId = existingClipId;
+      renderedPath = existingRendered.filePath;
+      previewUrl = `/api/clips/${clipId}/preview`;
+      downloadUrl = `/api/clips/${clipId}/download`;
+    } else {
+      const file = req.file;
+      if (!file) {
+        return sendErrorResponse(
+          res,
+          new AppError({
+            code: 'INVALID_MEDIA',
+            statusCode: 400,
+            userMessage: existingClipId
+              ? 'Corte renderizado não encontrado para republicação. Envie o arquivo de vídeo novamente.'
+              : 'Nenhum arquivo de vídeo válido foi enviado.',
+          }),
+          'upload-and-cut-short',
+          { userId: req.userId }
+        );
+      }
+
+      const validation = await validateUploadedFile(file, req.userId);
+      if (!validation.valid) {
+        return sendErrorResponse(
+          res,
+          new AppError({
+            code: validation.code || 'INVALID_MEDIA',
+            statusCode: validation.status || 400,
+            userMessage: validation.error || 'Arquivo de vídeo inválido.',
+          }),
+          'upload-and-cut-short',
+          { userId: req.userId }
+        );
+      }
+
+      const intervalCheck = validateCutInterval(startTime, endTime, 300);
+      if (!intervalCheck.valid) {
+        return sendErrorResponse(
+          res,
+          new AppError({
+            code: 'INVALID_CUT_INTERVAL',
+            statusCode: 400,
+            userMessage: intervalCheck.error || 'Intervalo de corte inválido.',
+          }),
+          'upload-and-cut-short',
+          { userId: req.userId }
+        );
+      }
+
+      if (validation.duration && intervalCheck.endSec! > validation.duration) {
+        return sendErrorResponse(
+          res,
+          new AppError({
+            code: 'INVALID_CUT_INTERVAL',
+            statusCode: 400,
+            userMessage: `O tempo final (${intervalCheck.formattedEnd}) excede a duração real do vídeo (${formatSecondsToTimestamp(validation.duration)}).`,
+          }),
+          'upload-and-cut-short',
+          { userId: req.userId }
+        );
+      }
+
+      clipId = `up_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+      const outPath = path.join(CLIPS_DIR, `${clipId}.mp4`);
+      const parsedFraming = parseJsonField<any>(framing);
+
+      const renderResult = await renderClip({
+        sourcePath: file.path,
+        startTime: intervalCheck.formattedStart!,
+        endTime: intervalCheck.formattedEnd!,
+        clipId,
+        outputPath: outPath,
+        format,
+        subtitleTheme,
+        overlayTitle: title,
+        hook,
+        framing: parsedFraming,
+        removeSilence: Boolean(removeSilence === true || removeSilence === 'true'),
+      });
+
+      renderedPath = renderResult.outputPath;
+      previewUrl = `/api/clips/${clipId}/preview`;
+      downloadUrl = `/api/clips/${clipId}/download`;
+
+      // Register the rendered clip BEFORE attempting YouTube upload so it is always preserved for preview, download, and retry
+      jobQueue.registerRenderedClip(
+        clipId,
+        renderResult.outputPath,
+        renderResult.duration,
+        renderResult.fileSize,
+        req.userId
+      );
     }
 
     const serverCreds = stateManager.getCredentials(req.userId);
-    const rawToken = (token || '').trim();
+    const rawToken = String(token || '').trim();
     const isMasked = !rawToken || rawToken.startsWith('***') || rawToken.includes('••••');
     const tokenToUse = (isMasked ? serverCreds.youtube.accessToken : rawToken || '').trim();
-    if (!tokenToUse) {
-      return res.status(400).json({ error: 'Token de autorização do YouTube não configurado.' });
+
+    const rawRt = String(refreshToken || '').trim();
+    const cleanRt = !rawRt || rawRt.startsWith('***') || rawRt.includes('••••') ? '' : rawRt;
+    const refreshToUse = (cleanRt || serverCreds.youtube.refreshToken || '').trim();
+
+    if (!tokenToUse && !refreshToUse) {
+      return res.status(400).json({
+        success: false,
+        error: 'Token de autorização do YouTube não configurado. O corte foi salvo e pode ser baixado ou publicado depois.',
+        code: 'YOUTUBE_UPLOAD_FAILED',
+        correlationId,
+        clipId,
+        previewUrl,
+        downloadUrl,
+        canRetryPublish: true,
+      });
     }
 
-    const clipId = `up_${Date.now()}`;
-    const outPath = path.join(CLIPS_DIR, `${clipId}.mp4`);
-
-    const renderResult = await renderClip({
-      sourcePath: file.path,
-      startTime: sanitizeTimestamp(startTime, '00:00'),
-      endTime: sanitizeTimestamp(endTime, '00:30'),
-      clipId,
-      outputPath: outPath,
-      format,
-      overlayTitle: title,
-      hook,
-      framing,
-    });
-    renderedPath = renderResult.outputPath;
-
-    const parsedTags =
-      typeof tags === 'string'
+    const parsedTags = Array.isArray(tags)
+      ? tags.map((t: any) => String(t).trim()).filter(Boolean)
+      : typeof tags === 'string' && tags.trim()
         ? tags
             .split(',')
             .map((t: string) => t.trim())
@@ -597,17 +1223,22 @@ cutRouter.post('/upload-and-cut-short', uploadRateLimiter, upload.single('video'
 
     const uploadResult = await uploadVideoToYouTube({
       token: tokenToUse,
+      refreshToken: refreshToUse,
       title,
       description: description || `${title}\n\n#Shorts #Viral`,
-      privacy,
+      privacy: String(privacy).trim().toLowerCase(),
       tags: parsedTags,
       hook,
       videoFilePath: renderedPath,
+      userId: req.userId,
     });
 
     if (uploadResult.success) {
       return res.json({
         success: true,
+        clipId,
+        previewUrl,
+        downloadUrl,
         videoId: uploadResult.videoId,
         account: uploadResult.channelTitle,
         videoUrl: uploadResult.videoUrl,
@@ -615,11 +1246,28 @@ cutRouter.post('/upload-and-cut-short', uploadRateLimiter, upload.single('video'
       });
     }
 
-    return res.status(uploadResult.status || 500).json({
+    // Upload failed: keep rendered clip intact and return clipId + previewUrl + downloadUrl for immediate retry without re-rendering
+    logger.warn('[CutRoutes][upload-and-cut-short] Falha no upload para o YouTube após renderização bem-sucedida', {
+      action: 'upload_and_cut_publish_failed',
+      clipId,
+      code: uploadResult.code || 'YOUTUBE_UPLOAD_FAILED',
+      status: uploadResult.status || 502,
+      correlationId,
+      userId: req.userId,
+    });
+
+    return res.status(uploadResult.status || 502).json({
+      success: false,
       error: uploadResult.error || 'Erro ao enviar o vídeo cortado para o YouTube.',
+      code: uploadResult.code || 'YOUTUBE_UPLOAD_FAILED',
+      correlationId,
+      clipId,
+      previewUrl,
+      downloadUrl,
+      canRetryPublish: true,
     });
   } catch (err: any) {
-    return handleRouteError(res, err, 'upload-and-cut-short');
+    return sendErrorResponse(res, err, 'upload-and-cut-short', { userId: req.userId });
   } finally {
     if (req.file?.path) {
       await fsPromises.unlink(req.file.path).catch(() => {});
@@ -627,56 +1275,215 @@ cutRouter.post('/upload-and-cut-short', uploadRateLimiter, upload.single('video'
   }
 });
 
+// 10b. Retry publishing an already-rendered clip to YouTube without re-rendering
+cutRouter.post('/clips/:clipId/publish-youtube', async (req: Request, res: Response) => {
+  const correlationId = getCorrelationId(res);
+  try {
+    if (!req.userId) {
+      return res.status(401).json({
+        error: 'Acesso não autorizado. Faça login para continuar.',
+        code: 'YOUTUBE_UPLOAD_FAILED',
+        correlationId,
+      });
+    }
+
+    const clipId = String(req.params.clipId).replace(/[^a-zA-Z0-9_-]/g, '_');
+    const clipMeta = jobQueue.getRenderedClipForUser(clipId, req.userId);
+    if (!clipMeta || !(await checkFileExists(clipMeta.filePath))) {
+      return res.status(404).json({
+        error: 'Corte renderizado não encontrado para republicação.',
+        code: 'JOB_NOT_FOUND',
+        correlationId,
+      });
+    }
+
+    const {
+      title = 'Corte Viral #Shorts',
+      description = '',
+      privacy = 'public',
+      tags = '',
+      token = '',
+      refreshToken = '',
+      hook = '',
+    } = req.body || {};
+
+    const metaCheck = validateTitleAndDescriptionAndPrivacy({
+      title,
+      description,
+      privacy,
+      requirePrivacy: true,
+    });
+    if (!metaCheck.valid) {
+      return sendErrorResponse(
+        res,
+        new AppError({ code: metaCheck.code || 'INVALID_CUT_INTERVAL', statusCode: 400, userMessage: metaCheck.error! }),
+        'clips-publish-youtube',
+        { userId: req.userId }
+      );
+    }
+
+    const serverCreds = stateManager.getCredentials(req.userId);
+    const rawToken = String(token || '').trim();
+    const isMasked = !rawToken || rawToken.startsWith('***') || rawToken.includes('••••');
+    const tokenToUse = (isMasked ? serverCreds.youtube.accessToken : rawToken || '').trim();
+    const rawRt = String(refreshToken || '').trim();
+    const cleanRt = !rawRt || rawRt.startsWith('***') || rawRt.includes('••••') ? '' : rawRt;
+    const refreshToUse = (cleanRt || serverCreds.youtube.refreshToken || '').trim();
+
+    const parsedTags = Array.isArray(tags)
+      ? tags.map((t: any) => String(t).trim()).filter(Boolean)
+      : typeof tags === 'string' && tags.trim()
+        ? tags.split(',').map((t: string) => t.trim()).filter(Boolean)
+        : ['Shorts', 'Viral'];
+
+    const uploadResult = await uploadVideoToYouTube({
+      token: tokenToUse,
+      refreshToken: refreshToUse,
+      title,
+      description: description || `${title}\n\n#Shorts #Viral`,
+      privacy: String(privacy).trim().toLowerCase(),
+      tags: parsedTags,
+      hook,
+      videoFilePath: clipMeta.filePath,
+      userId: req.userId,
+    });
+
+    const previewUrl = `/api/clips/${clipId}/preview`;
+    const downloadUrl = `/api/clips/${clipId}/download`;
+
+    if (uploadResult.success) {
+      return res.json({
+        success: true,
+        clipId,
+        previewUrl,
+        downloadUrl,
+        videoId: uploadResult.videoId,
+        account: uploadResult.channelTitle,
+        videoUrl: uploadResult.videoUrl,
+        message: `Corte publicado com sucesso no canal "${uploadResult.channelTitle}"! Assista em: ${uploadResult.videoUrl}`,
+      });
+    }
+
+    return res.status(uploadResult.status || 502).json({
+      success: false,
+      error: uploadResult.error || 'Erro ao enviar o corte para o YouTube.',
+      code: uploadResult.code || 'YOUTUBE_UPLOAD_FAILED',
+      correlationId,
+      clipId,
+      previewUrl,
+      downloadUrl,
+      canRetryPublish: true,
+    });
+  } catch (err: any) {
+    return sendErrorResponse(res, err, 'clips-publish-youtube', { userId: req.userId });
+  }
+});
+
 // 11. Render Local Video File Cut to MP4 and Download to Computer
 cutRouter.post('/render-download-cut', uploadRateLimiter, upload.single('video') as any, async (req: Request, res: Response) => {
   const file = req.file;
+  const correlationId = getCorrelationId(res);
   try {
     if (!file) {
-      return res.status(400).json({ error: 'Nenhum arquivo de vídeo válido foi enviado.' });
+      return res.status(400).json({
+        error: 'Nenhum arquivo de vídeo válido foi enviado.',
+        code: 'INVALID_MEDIA',
+        correlationId,
+      });
     }
 
     if (!req.userId) {
       if (file.path) await fsPromises.unlink(file.path).catch(() => {});
-      return res.status(401).json({ error: 'Acesso não autorizado. Faça login para continuar.' });
+      return res.status(401).json({
+        error: 'Acesso não autorizado. Faça login para continuar.',
+        code: 'INVALID_MEDIA',
+        correlationId,
+      });
     }
 
     const validation = await validateUploadedFile(file, req.userId);
     if (!validation.valid) {
       if (file.path) await fsPromises.unlink(file.path).catch(() => {});
-      return res.status(validation.status || 400).json({ error: validation.error });
+      return res.status(validation.status || 400).json({
+        error: validation.error,
+        code: validation.code || 'INVALID_MEDIA',
+        correlationId,
+      });
     }
 
     const {
       startTime = '00:00',
       endTime = '00:30',
       format = 'speaker_center',
+      subtitleTheme = 'none',
       title = 'corte_viral',
+      hook = '',
       framing,
-    } = req.body;
+      removeSilence = false,
+    } = req.body || {};
+
+    const metaCheck = validateTitleAndDescriptionAndPrivacy({ title });
+    if (!metaCheck.valid) {
+      if (file.path) await fsPromises.unlink(file.path).catch(() => {});
+      return sendErrorResponse(
+        res,
+        new AppError({ code: metaCheck.code || 'INVALID_CUT_INTERVAL', statusCode: 400, userMessage: metaCheck.error! }),
+        'render-download-cut',
+        { userId: req.userId }
+      );
+    }
 
     const intervalCheck = validateCutInterval(startTime, endTime, 300);
     if (!intervalCheck.valid) {
-      return res.status(400).json({ error: intervalCheck.error });
+      if (file.path) await fsPromises.unlink(file.path).catch(() => {});
+      return sendErrorResponse(
+        res,
+        new AppError({
+          code: 'INVALID_CUT_INTERVAL',
+          statusCode: 400,
+          userMessage: intervalCheck.error || 'Intervalo de corte inválido.',
+        }),
+        'render-download-cut',
+        { userId: req.userId }
+      );
     }
 
-    const clipId = `local_${Date.now()}`;
+    if (validation.duration && intervalCheck.endSec! > validation.duration) {
+      if (file.path) await fsPromises.unlink(file.path).catch(() => {});
+      return sendErrorResponse(
+        res,
+        new AppError({
+          code: 'INVALID_CUT_INTERVAL',
+          statusCode: 400,
+          userMessage: `O tempo final (${intervalCheck.formattedEnd}) excede a duração real do vídeo (${formatSecondsToTimestamp(validation.duration)}).`,
+        }),
+        'render-download-cut',
+        { userId: req.userId }
+      );
+    }
+
+    const clipId = `local_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
     const outPath = path.join(CLIPS_DIR, `${clipId}.mp4`);
+    const parsedFraming = parseJsonField<any>(framing);
 
     const renderResult = await renderClip({
       sourcePath: file.path,
-      startTime: sanitizeTimestamp(startTime, '00:00'),
-      endTime: sanitizeTimestamp(endTime, '00:30'),
+      startTime: sanitizeTimestamp(intervalCheck.formattedStart!, '00:00'),
+      endTime: sanitizeTimestamp(intervalCheck.formattedEnd!, '00:30'),
       clipId,
       outputPath: outPath,
       format,
+      subtitleTheme,
       overlayTitle: title,
-      framing,
+      hook,
+      framing: parsedFraming,
+      removeSilence: Boolean(removeSilence === true || removeSilence === 'true'),
     });
 
     jobQueue.registerRenderedClip(clipId, renderResult.outputPath, renderResult.duration, renderResult.fileSize, req.userId);
 
     const safeTitle = (title || 'corte_viral').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 30);
-    res.download(outPath, `${safeTitle}.mp4`, () => {
+    return res.download(outPath, `${safeTitle}.mp4`, () => {
       if (file?.path) {
         fsPromises.unlink(file.path).catch(() => {});
       }
@@ -685,6 +1492,6 @@ cutRouter.post('/render-download-cut', uploadRateLimiter, upload.single('video')
     if (file?.path) {
       await fsPromises.unlink(file.path).catch(() => {});
     }
-    return handleRouteError(res, err, 'render-download-cut');
+    return sendErrorResponse(res, err, 'render-download-cut', { userId: req.userId });
   }
 });

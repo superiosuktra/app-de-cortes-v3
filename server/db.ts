@@ -256,6 +256,30 @@ function runMigrations() {
       'INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)'
     ).run(2, '002_import_legacy_json', new Date().toISOString());
   }
+
+  // Migration 3: Persist batch job source metadata, cuts payload, zip path, and finished_at for restart recovery
+  if (!appliedVersions.has(3)) {
+    const existingCols = new Set(
+      (sqlite.prepare('PRAGMA table_info(jobs)').all() as Array<{ name: string }>).map((c) => c.name)
+    );
+    const additions: Array<[string, string]> = [
+      ['source_path', 'TEXT'],
+      ['source_offset_sec', 'REAL DEFAULT 0'],
+      ['source_duration_sec', 'REAL'],
+      ['owns_source_file', 'INTEGER DEFAULT 0'],
+      ['cuts_json', 'TEXT'],
+      ['zip_path', 'TEXT'],
+      ['finished_at', 'TEXT'],
+    ];
+    for (const [col, def] of additions) {
+      if (!existingCols.has(col)) {
+        sqlite.exec(`ALTER TABLE jobs ADD COLUMN ${col} ${def}`);
+      }
+    }
+    sqlite.prepare(
+      'INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)'
+    ).run(3, '003_job_persistence_columns', new Date().toISOString());
+  }
 }
 
 runMigrations();

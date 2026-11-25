@@ -10,12 +10,13 @@ export const DATA_DIR = path.join(ROOT_DIR, 'data');
 export const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 export const TEMP_DIR = path.join(DATA_DIR, 'temp');
 export const CLIPS_DIR = path.join(DATA_DIR, 'rendered_clips');
+export const BATCH_SOURCES_DIR = path.join(DATA_DIR, 'batch_sources');
 export const BIN_DIR = path.join(ROOT_DIR, 'bin');
 export const STATE_FILE = path.join(DATA_DIR, 'app_state.json');
 
 // Ensure essential directories exist
 export function ensureDirectories() {
-  [DATA_DIR, UPLOADS_DIR, TEMP_DIR, CLIPS_DIR, BIN_DIR].forEach((dir) => {
+  [DATA_DIR, UPLOADS_DIR, TEMP_DIR, CLIPS_DIR, BATCH_SOURCES_DIR, BIN_DIR].forEach((dir) => {
     if (!fs.existsSync(dir)) {
       try {
         fs.mkdirSync(dir, { recursive: true });

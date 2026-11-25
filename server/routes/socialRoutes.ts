@@ -17,8 +17,8 @@ import { stateManager } from '../services/stateService.js';
 import {
   normalizeSafeYouTubeUrl,
   validateCutInterval,
-  sanitizeTimestamp,
 } from '../middleware/security.js';
+import { getCorrelationId, sendErrorResponse } from '../utils/errors.js';
 
 export const socialRouter = Router();
 
@@ -144,9 +144,12 @@ socialRouter.post('/post-social', async (req: Request, res: Response) => {
         }
       }
 
-      // Real upload to YouTube!
+      // Real upload to YouTube! (includes internal automatic token refresh on 401 without re-rendering)
       const uploadResult = await uploadVideoToYouTube({
         token: cleanToken,
+        refreshToken: useRefreshToken,
+        clientId,
+        clientSecret,
         title: title || 'Corte Viral',
         description: caption || '',
         privacy,
@@ -162,6 +165,7 @@ socialRouter.post('/post-social', async (req: Request, res: Response) => {
         teaserDurationSec,
         teaserText,
         partBadge,
+        userId,
       });
 
       if (uploadResult.success) {
@@ -176,72 +180,13 @@ socialRouter.post('/post-social', async (req: Request, res: Response) => {
         });
       }
 
-      // If token expired (401), try automatic refresh via refreshToken
-      if (uploadResult.status === 401 && useRefreshToken) {
-        const refreshed = await refreshYouTubeToken({
-          refreshToken: useRefreshToken,
-          clientId,
-          clientSecret,
-          userId,
-        });
-        if (refreshed.success && refreshed.accessToken) {
-          cleanToken = refreshed.accessToken;
-          const retryUpload = await uploadVideoToYouTube({
-            token: cleanToken,
-            title: title || 'Corte Viral',
-            description: caption || '',
-            privacy,
-            tags: effectiveTags,
-            videoUrl,
-            startTime,
-            endTime,
-            format,
-            hook,
-            framing,
-            subtitles,
-            teaserOffsetSec,
-            teaserDurationSec,
-            teaserText,
-            partBadge,
-          });
-          if (retryUpload.success) {
-            return res.json({
-              success: true,
-              platform: 'youtube',
-              account: retryUpload.channelTitle || 'Canal do YouTube',
-              videoId: retryUpload.videoId,
-              videoUrl: retryUpload.videoUrl,
-              message: `Vídeo postado no YouTube Shorts (${retryUpload.channelTitle})! Link: ${retryUpload.videoUrl}`,
-              publishedAt: new Date().toISOString(),
-            });
-          }
-          return res.status(retryUpload.status || 500).json({
-            error: `Erro ao enviar para o YouTube após renovação do token (${retryUpload.status}): ${retryUpload.error || 'Falha no envio'}`,
-          });
-        } else {
-          return res.status(401).json({
-            error: `Falha ao renovar token de acesso do YouTube: ${refreshed.error || 'Token inválido'}`,
-          });
-        }
-      }
-
-      if (uploadResult.status === 403) {
-        return res.status(403).json({
-          error: uploadResult.error?.includes('quota')
-            ? 'Cota diária da API do YouTube excedida no projeto do OAuth Playground. Para cota exclusiva, use seu próprio Client ID/Secret.'
-            : `Erro YouTube API (403): ${uploadResult.error}`,
-        });
-      }
-
-      if (uploadResult.status === 401) {
-        return res.status(401).json({
-          error:
-            'Access Token do YouTube (ya29...) expirou. No OAuth Playground (Passo 2), gere um novo Access token ou renove com o Refresh Token.',
-        });
-      }
-
+      const correlationId = getCorrelationId(res);
       return res.status(uploadResult.status || 500).json({
-        error: `Erro YouTube API (${uploadResult.status}): ${uploadResult.error}`,
+        error: uploadResult.error || `Erro YouTube API (${uploadResult.status || 500})`,
+        code: uploadResult.code || 'YOUTUBE_UPLOAD_FAILED',
+        correlationId,
+        tokenExpired: uploadResult.tokenExpired || false,
+        quotaExceeded: uploadResult.quotaExceeded || false,
       });
     }
 
@@ -262,7 +207,7 @@ socialRouter.post('/post-social', async (req: Request, res: Response) => {
 
     return res.status(400).json({ error: `Plataforma não suportada: ${platform}` });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Erro ao publicar nas redes.' });
+    return sendErrorResponse(res, err, 'post-social', { fallbackCode: 'YOUTUBE_UPLOAD_FAILED', userId: req.userId });
   }
 });
 
@@ -331,6 +276,9 @@ socialRouter.post('/post-youtube', async (req: Request, res: Response) => {
 
     const uploadResult = await uploadVideoToYouTube({
       token: tokenToUse,
+      refreshToken: useRefreshToken,
+      clientId,
+      clientSecret,
       title,
       description,
       privacy,
@@ -340,6 +288,7 @@ socialRouter.post('/post-youtube', async (req: Request, res: Response) => {
       startTime,
       endTime,
       format,
+      userId,
     });
 
     if (uploadResult.success) {
@@ -348,9 +297,13 @@ socialRouter.post('/post-youtube', async (req: Request, res: Response) => {
 
     return res.status(uploadResult.status || 500).json({
       error: uploadResult.error || 'Erro ao publicar vídeo no YouTube.',
+      code: uploadResult.code || 'YOUTUBE_UPLOAD_FAILED',
+      correlationId: getCorrelationId(res),
+      tokenExpired: uploadResult.tokenExpired || false,
+      quotaExceeded: uploadResult.quotaExceeded || false,
     });
   } catch (error: any) {
-    res.status(500).json({ error: error.message || 'Erro ao processar postagem no YouTube.' });
+    return sendErrorResponse(res, error, 'post-youtube', { fallbackCode: 'YOUTUBE_UPLOAD_FAILED', userId: req.userId });
   }
 });
 

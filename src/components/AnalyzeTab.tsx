@@ -31,7 +31,7 @@ import {
   SlidersHorizontal,
 } from 'lucide-react';
 import { VideoInfo, ViralCut, AutoPostSettings, CutIntent, BatchRenderJob } from '../types';
-import { fetchJson, authFetch } from '../utils/api';
+import { fetchJson, authFetch, formatBackendErrorMessage } from '../utils/api';
 import confetti from 'canvas-confetti';
 
 interface AnalyzeTabProps {
@@ -351,7 +351,9 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || `Erro HTTP ${res.status}`);
+        throw new Error(
+          formatBackendErrorMessage(errData.code, errData.error || `Erro HTTP ${res.status}`, errData.correlationId)
+        );
       }
 
       const data = await res.json();
@@ -363,6 +365,7 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
                 ...c,
                 renderStatus: 'completed',
                 renderProgress: 100,
+                renderError: undefined,
                 previewUrl: data.previewUrl || `/api/clips/${cut.id}/preview`,
                 downloadUrl: data.downloadUrl || `/api/clips/${cut.id}/download`,
                 fileSize: data.fileSize,
@@ -373,14 +376,14 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
 
       confetti({ particleCount: 35, spread: 60 });
     } catch (err: any) {
-      setStatusMessage(`❌ Falha ao renderizar corte: ${err.message}`);
+      setStatusMessage(`❌ Falha ao renderizar corte: ${err?.message || 'Erro desconhecido'}`);
       setViralCuts(
         viralCuts.map((c) =>
           c.id === cut.id
             ? {
                 ...c,
                 renderStatus: 'failed',
-                renderError: err.message,
+                renderError: err?.message || 'Erro desconhecido',
               }
             : c
         )
@@ -412,7 +415,7 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
         }),
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (res.ok && data.jobId) {
         setActiveBatchJob({
           id: data.jobId,
@@ -428,47 +431,82 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
           updatedAt: new Date().toISOString(),
         });
       } else {
-        throw new Error(data.error || 'Erro ao iniciar renderização em lote.');
+        throw new Error(
+          formatBackendErrorMessage(data.code, data.error || 'Erro ao iniciar renderização em lote.', data.correlationId)
+        );
       }
     } catch (err: any) {
-      setStatusMessage(`❌ Erro: ${err.message}`);
+      setStatusMessage(`❌ Erro: ${err?.message || 'Falha ao iniciar renderização em lote.'}`);
     }
   };
 
   // Polling Batch Job Status
   useEffect(() => {
-    if (!activeBatchJob || activeBatchJob.status === 'completed' || activeBatchJob.status === 'failed') {
+    if (
+      !activeBatchJob ||
+      activeBatchJob.status === 'completed' ||
+      activeBatchJob.status === 'failed' ||
+      activeBatchJob.status === 'cancelled'
+    ) {
       return;
     }
 
+    let stopped = false;
     const interval = setInterval(async () => {
+      if (stopped) return;
       try {
         const res = await authFetch(`/api/batch/${activeBatchJob.id}`);
         if (res.ok) {
           const updated: BatchRenderJob = await res.json();
           setActiveBatchJob(updated);
 
-          // If completed, update cut statuses
+          // If completed, update per-cut statuses accurately
           if (updated.status === 'completed') {
+            stopped = true;
+            clearInterval(interval);
             setViralCuts(
-              viralCuts.map((c) =>
-                updated.itemIds.includes(c.id)
-                  ? {
-                      ...c,
-                      renderStatus: 'completed',
-                      previewUrl: `/api/clips/${c.id}/preview`,
-                      downloadUrl: `/api/clips/${c.id}/download`,
-                    }
-                  : c
-              )
+              viralCuts.map((c) => {
+                if (!updated.itemIds.includes(c.id)) return c;
+                const info = updated.clipData?.[c.id];
+                if (info?.error) {
+                  return {
+                    ...c,
+                    renderStatus: 'failed',
+                    renderError: info.error,
+                  };
+                }
+                return {
+                  ...c,
+                  renderStatus: 'completed',
+                  renderError: undefined,
+                  previewUrl: info?.previewUrl || `/api/clips/${c.id}/preview`,
+                  downloadUrl: info?.downloadUrl || `/api/clips/${c.id}/download`,
+                };
+              })
             );
             confetti({ particleCount: 70, spread: 75 });
+          } else if (updated.status === 'failed' || updated.status === 'cancelled') {
+            stopped = true;
+            clearInterval(interval);
+            if (updated.error) {
+              setStatusMessage(`❌ ${updated.error}`);
+            }
           }
+        } else if (res.status === 404 || res.status === 401 || res.status === 403) {
+          stopped = true;
+          clearInterval(interval);
+          const errData = await res.json().catch(() => ({}));
+          const errMsg = formatBackendErrorMessage(errData.code, errData.error, errData.correlationId);
+          setActiveBatchJob((prev) => (prev ? { ...prev, status: 'failed', error: errMsg } : null));
+          setStatusMessage(`❌ ${errMsg}`);
         }
       } catch {}
     }, 2000);
 
-    return () => clearInterval(interval);
+    return () => {
+      stopped = true;
+      clearInterval(interval);
+    };
   }, [activeBatchJob, viralCuts]);
 
   // Bulk ZIP Download Handler (Downloads selected cuts or entire sequence)
@@ -495,7 +533,7 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
         }),
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (res.ok && data.jobId) {
         // Poll for zip completion
         const zipJobId = data.jobId;
@@ -512,23 +550,35 @@ export const AnalyzeTab: React.FC<AnalyzeTabProps> = ({
                 // Trigger download
                 window.location.href = `/api/batch/${zipJobId}/download`;
                 confetti({ particleCount: 65, spread: 70 });
-              } else if (jobData.status === 'failed') {
+              } else if (jobData.status === 'failed' || jobData.status === 'cancelled') {
                 clearInterval(checkInterval);
                 setIsPackagingZip(false);
-                setStatusMessage(`❌ Erro ao gerar ZIP: ${jobData.error}`);
+                setStatusMessage(
+                  `❌ Erro ao gerar ZIP: ${formatBackendErrorMessage(jobData.code, jobData.error, jobData.correlationId)}`
+                );
               }
+            } else {
+              clearInterval(checkInterval);
+              setIsPackagingZip(false);
+              const errData = await jobRes.json().catch(() => ({}));
+              setStatusMessage(
+                `❌ Erro ao gerar ZIP: ${formatBackendErrorMessage(errData.code, errData.error, errData.correlationId)}`
+              );
             }
-          } catch {
+          } catch (pollErr: any) {
             clearInterval(checkInterval);
             setIsPackagingZip(false);
+            setStatusMessage(`❌ Erro ao verificar status do ZIP: ${pollErr?.message || 'Erro de rede'}`);
           }
         }, 1500);
       } else {
-        throw new Error(data.error || 'Falha ao iniciar criação do arquivo ZIP.');
+        throw new Error(
+          formatBackendErrorMessage(data.code, data.error || 'Falha ao iniciar criação do arquivo ZIP.', data.correlationId)
+        );
       }
     } catch (err: any) {
       setIsPackagingZip(false);
-      setStatusMessage(`❌ Erro ao gerar ZIP: ${err.message}`);
+      setStatusMessage(`❌ Erro ao gerar ZIP: ${err?.message || 'Falha ao criar ZIP.'}`);
     }
   };
 

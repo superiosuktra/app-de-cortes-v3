@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Header } from './components/Header';
 import { AutoBotStatus } from './components/AutoPostQueueManager';
 import { VideoInfo, ViralCut, SavedCut, PlatformCredentials, QueueItem, AutoPostSettings, SocialPlatform, AuthUser } from './types';
-import { fetchJson, getAuthToken, setAuthToken, authFetch } from './utils/api';
+import { fetchJson, getAuthToken, setAuthToken, authFetch, formatBackendErrorMessage } from './utils/api';
 import { Flame, Sparkles, Scissors, Share2, Compass, ShieldCheck, Key, Zap, Settings } from 'lucide-react';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { GoogleLoginGate } from './components/GoogleLoginGate';
@@ -362,6 +362,18 @@ export default function App() {
   const credentialsRef = useRef<PlatformCredentials>(credentials);
   const autoPostSettingsRef = useRef<AutoPostSettings>(autoPostSettings);
   const isPostingRef = useRef<Set<string>>(new Set());
+  const isAutoBotRunningRef = useRef<boolean>(false);
+
+  const sanitizeRecoveredQueue = (items: QueueItem[]): QueueItem[] =>
+    items.map((item) =>
+      item.status === 'posting'
+        ? {
+            ...item,
+            status: 'failed',
+            error: item.error || 'Publicação interrompida ao recarregar a página. Tente novamente.',
+          }
+        : item
+    );
 
   const showToast = (msg: string) => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -415,33 +427,34 @@ export default function App() {
     setCurrentUser(user);
     setAuthToken(token);
     // Fetch state for this user from backend
-    authFetch('/api/storage/state')
-      .then((r) => r.json())
+    fetchJson<any>('/api/storage/state')
       .then((res) => {
-        if (res.success && res.state) {
-          if (res.state.lastUpdated) {
-            setLastSavedAt(res.state.lastUpdated);
+        if (res.ok && res.data?.success && res.data?.state) {
+          const st = res.data.state;
+          if (st.lastUpdated) {
+            setLastSavedAt(st.lastUpdated);
           }
-          if (Array.isArray(res.state.savedCuts)) {
-            setSavedCuts(res.state.savedCuts);
+          if (Array.isArray(st.savedCuts)) {
+            setSavedCuts(st.savedCuts);
           }
-          if (Array.isArray(res.state.queue)) {
-            setQueue(res.state.queue);
+          if (Array.isArray(st.queue)) {
+            setQueue(sanitizeRecoveredQueue(st.queue));
           }
-          if (Array.isArray(res.state.viralCuts)) {
-            setViralCuts(res.state.viralCuts);
-            setSelectedCut(res.state.viralCuts[0] || null);
+          if (Array.isArray(st.viralCuts)) {
+            setViralCuts(st.viralCuts);
+            setSelectedCut(st.viralCuts[0] || null);
           }
-          if (res.state.autoPostSettings) {
-            setAutoPostSettings(res.state.autoPostSettings);
+          if (st.autoPostSettings) {
+            setAutoPostSettings(st.autoPostSettings);
           }
-          if (res.state.credentials) {
+          if (st.credentials) {
             setCredentials((prev) => ({
               ...prev,
-              ...res.state.credentials,
-              youtube: { ...prev.youtube, ...res.state.credentials.youtube },
-              instagram: { ...prev.instagram, ...res.state.credentials.instagram },
-              tiktok: { ...prev.tiktok, ...res.state.credentials.tiktok },
+              ...st.credentials,
+              youtube: { ...prev.youtube, ...st.credentials.youtube },
+              instagram: { ...prev.instagram, ...st.credentials.instagram },
+              tiktok: { ...prev.tiktok, ...st.credentials.tiktok },
+              kwai: { ...prev.kwai, ...st.credentials.kwai },
             }));
           }
         }
@@ -494,7 +507,9 @@ export default function App() {
       // Load queue
       const storedQueue = localStorage.getItem(STORAGE_QUEUE_KEY);
       if (storedQueue !== null) {
-        const parsedQ = JSON.parse(storedQueue).filter((q: any) => q.status === 'published' || !isLegacyRandomCut(q));
+        const parsedQ = sanitizeRecoveredQueue(
+          JSON.parse(storedQueue).filter((q: any) => q.status === 'published' || !isLegacyRandomCut(q))
+        );
         setQueue(parsedQ);
       } else {
         setQueue([]);
@@ -540,48 +555,48 @@ export default function App() {
       setCredentials(mergedCreds);
 
       // Fetch persistent backend storage to restore state across restarts/browsers
-      authFetch('/api/storage/state')
-        .then((r) => r.json())
+      fetchJson<any>('/api/storage/state')
         .then((res) => {
-          if (res.success && res.state) {
-            if (res.state.lastUpdated) {
-              setLastSavedAt(res.state.lastUpdated);
+          if (res.ok && res.data?.success && res.data?.state) {
+            const st = res.data.state;
+            if (st.lastUpdated) {
+              setLastSavedAt(st.lastUpdated);
             }
-            if (Array.isArray(res.state.savedCuts)) {
-              const cleanSaved = res.state.savedCuts.filter((c: any) => !isLegacyRandomCut(c));
+            if (Array.isArray(st.savedCuts)) {
+              const cleanSaved = st.savedCuts.filter((c: any) => !isLegacyRandomCut(c));
               if (cleanSaved.length > 0 || stored === '[]') {
                 setSavedCuts(cleanSaved);
               }
             }
-            if (Array.isArray(res.state.queue)) {
-              const cleanQueue = res.state.queue.filter(
-                (q: any) => q.status === 'published' || !isLegacyRandomCut(q)
+            if (Array.isArray(st.queue)) {
+              const cleanQueue = sanitizeRecoveredQueue(
+                st.queue.filter((q: any) => q.status === 'published' || !isLegacyRandomCut(q))
               );
               if (cleanQueue.length > 0 || storedQueue === '[]') {
                 setQueue(cleanQueue);
               }
             }
-            if (Array.isArray(res.state.viralCuts)) {
-              if (res.state.viralCuts.length > 0 || storedEditCuts === '[]') {
-                setViralCuts(res.state.viralCuts);
-                setSelectedCut(res.state.viralCuts[0] || null);
+            if (Array.isArray(st.viralCuts)) {
+              if (st.viralCuts.length > 0 || storedEditCuts === '[]') {
+                setViralCuts(st.viralCuts);
+                setSelectedCut(st.viralCuts[0] || null);
               }
             }
-            if (res.state.autoPostSettings) {
-              const loadedSettings = { ...res.state.autoPostSettings };
+            if (st.autoPostSettings) {
+              const loadedSettings = { ...st.autoPostSettings };
               if (loadedSettings.intervalMinutes === 30 || loadedSettings.intervalMinutes === 15) {
                 loadedSettings.intervalMinutes = 5;
               }
               setAutoPostSettings(loadedSettings);
             }
-            if (res.state.credentials) {
+            if (st.credentials) {
               setCredentials((prev) => ({
                 ...prev,
-                ...res.state.credentials,
-                youtube: { ...prev.youtube, ...res.state.credentials.youtube },
-                instagram: { ...prev.instagram, ...res.state.credentials.instagram },
-                tiktok: { ...prev.tiktok, ...res.state.credentials.tiktok },
-                kwai: { ...prev.kwai, ...res.state.credentials.kwai },
+                ...st.credentials,
+                youtube: { ...prev.youtube, ...st.credentials.youtube },
+                instagram: { ...prev.instagram, ...st.credentials.instagram },
+                tiktok: { ...prev.tiktok, ...st.credentials.tiktok },
+                kwai: { ...prev.kwai, ...st.credentials.kwai },
               }));
             }
           }
@@ -607,15 +622,14 @@ export default function App() {
 
     const timer = setTimeout(() => {
       setIsSaving(true);
-      authFetch('/api/storage/state', {
+      fetchJson<any>('/api/storage/state', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ savedCuts, queue, autoPostSettings, credentials, viralCuts }),
       })
-        .then((r) => r.json())
         .then((res) => {
-          if (res.success) {
-            setLastSavedAt(res.lastUpdated || new Date().toISOString());
+          if (res.ok && res.data?.success) {
+            setLastSavedAt(res.data.lastUpdated || new Date().toISOString());
           }
         })
         .catch((e) => console.warn('Auto-save error:', e))
@@ -627,16 +641,17 @@ export default function App() {
 
   const handleForceSync = () => {
     setIsSaving(true);
-    authFetch('/api/storage/state', {
+    fetchJson<any>('/api/storage/state', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ savedCuts, queue, autoPostSettings, credentials, viralCuts }),
     })
-      .then((r) => r.json())
       .then((res) => {
-        if (res.success) {
-          setLastSavedAt(res.lastUpdated || new Date().toISOString());
+        if (res.ok && res.data?.success) {
+          setLastSavedAt(res.data.lastUpdated || new Date().toISOString());
           showToast('☁️ Sincronizado com o servidor com sucesso!');
+        } else {
+          showToast(`❌ ${formatBackendErrorMessage(res.code, res.error, res.correlationId)}`);
         }
       })
       .catch((e) => console.warn('Manual sync error:', e))
@@ -879,10 +894,21 @@ export default function App() {
       if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
       return fb;
     };
+    const formatSec = (total: number) => {
+      const safe = Math.max(0, Math.floor(total));
+      const h = Math.floor(safe / 3600);
+      const m = Math.floor((safe % 3600) / 60);
+      const s = safe % 60;
+      return h > 0
+        ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+        : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    };
     const startStr = partial?.startTime || '00:00';
     const endStr = partial?.endTime || '00:45';
     const startSec = parseSec(startStr, 0);
-    const endSec = Math.max(startSec + 5, parseSec(endStr, 45));
+    const parsedEndSec = parseSec(endStr, 45);
+    const endSec = Math.max(startSec + 5, parsedEndSec);
+    const normalizedEndStr = endSec !== parsedEndSec ? formatSec(endSec) : endStr;
     const durSec = Math.max(5, endSec - startSec);
     const nextIndex = viralCuts.length + 1;
     const defaultTitle = partial?.title || `✂️ [CORTE MANUAL #${nextIndex}] ${videoInfo?.title?.slice(0, 42) || 'Trecho Personalizado'}`;
@@ -892,7 +918,7 @@ export default function App() {
       title: defaultTitle,
       partBadge: `CORTE ${nextIndex}`,
       startTime: startStr,
-      endTime: endStr,
+      endTime: normalizedEndStr,
       startSeconds: startSec,
       endSeconds: endSec,
       durationSeconds: durSec,
@@ -986,6 +1012,10 @@ export default function App() {
         }
 
         try {
+          const platformCaption = (item.caption?.[p] || item.caption?.youtube || item.cutTitle || '').trim();
+          const hashtagBlock = Array.isArray(item.hashtags)
+            ? item.hashtags.map((h) => (h.startsWith('#') ? h : `#${h}`)).join(' ')
+            : '';
           const res = await fetchJson<any>('/api/post-social', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -996,7 +1026,7 @@ export default function App() {
               clientId: (currentCreds[p] as any)?.clientId,
               clientSecret: (currentCreds[p] as any)?.clientSecret,
               title: item.cutTitle,
-              caption: `${item.caption[p]}\n\n${item.hashtags.map((h) => (h.startsWith('#') ? h : `#${h}`)).join(' ')}`,
+              caption: hashtagBlock ? `${platformCaption}\n\n${hashtagBlock}` : platformCaption,
               privacy: currentSettings.defaultPrivacy,
               videoUrl: item.videoUrl,
               startTime: item.startTime,
@@ -1006,7 +1036,7 @@ export default function App() {
             }),
           });
 
-          if (res.ok && res.data.success) {
+          if (res.ok && res.data?.success) {
             hasSuccess = true;
             const account = res.data.account || 'Conta Conectada';
             const postedUrl = res.data.videoUrl;
@@ -1014,28 +1044,36 @@ export default function App() {
             publishedAccounts.push({ platform: p, account, videoUrl: postedUrl, videoId: postedId });
             logs.push(`✅ [${p.toUpperCase()}] ${res.data.message || 'Publicado com sucesso!'}`);
           } else {
-            const err = res.data?.error || res.error || 'Erro na transmissão da rede social';
+            const err = formatBackendErrorMessage(
+              res.data?.code || res.code,
+              res.data?.error || res.error || 'Erro na transmissão da rede social',
+              res.data?.correlationId || res.correlationId
+            );
             lastError = err;
             logs.push(`❌ [${p.toUpperCase()}] ${err}`);
           }
         } catch (err: any) {
-          lastError = err.message;
-          logs.push(`❌ [${p.toUpperCase()}] Erro de conexão: ${err.message}`);
+          lastError = err?.message || 'Erro de conexão';
+          logs.push(`❌ [${p.toUpperCase()}] Erro de conexão: ${lastError}`);
         }
       }
+
+      const latestItem = queueRef.current.find((q) => q.id === id);
+      const previousLogs = latestItem?.logs || item.logs || [];
 
       if (hasSuccess) {
         handleUpdateQueueItem(id, {
           status: 'published',
           publishedAt: new Date().toISOString(),
           publishedAccounts,
-          logs: [...(item.logs || []), ...logs],
+          error: undefined,
+          logs: [...previousLogs, ...logs],
         });
       } else {
         handleUpdateQueueItem(id, {
           status: 'failed',
           error: lastError || 'Nenhum token configurado para as redes selecionadas. Configure em APIs & Conexões.',
-          logs: [...(item.logs || []), ...logs],
+          logs: [...previousLogs, ...logs],
         });
       }
     } finally {
@@ -1117,7 +1155,8 @@ export default function App() {
 
   // 1-Click Autonomous Bot: Choose Trending Video -> Analyze & Smart Frame -> Generate Viral Cuts -> Enqueue Every 5 Minutes & Post #1 Immediately!
   const handleStartAutoBot = async (customNiche: string = 'geral') => {
-    if (autoBotStatus.isRunning) return;
+    if (isAutoBotRunningRef.current || autoBotStatus.isRunning) return;
+    isAutoBotRunningRef.current = true;
 
     setLegalView(null);
     setActiveTab('publish');
@@ -1153,7 +1192,17 @@ export default function App() {
         body: JSON.stringify({ niche: customNiche, refresh: true }),
       });
 
-      const trendingList: any[] = trendRes.ok && Array.isArray(trendRes.data?.trending) ? trendRes.data.trending : [];
+      if (!trendRes.ok) {
+        throw new Error(
+          formatBackendErrorMessage(
+            trendRes.code || trendRes.data?.code,
+            trendRes.error || 'Falha ao buscar vídeos em alta.',
+            trendRes.correlationId || trendRes.data?.correlationId
+          )
+        );
+      }
+
+      const trendingList: any[] = Array.isArray(trendRes.data?.trending) ? trendRes.data.trending : [];
       const queuedUrls = new Set(queueRef.current.map((q) => q.videoUrl));
       const chosenVideo =
         trendingList.find((v) => v?.url && !queuedUrls.has(v.url)) ||
@@ -1247,10 +1296,17 @@ export default function App() {
         }),
       });
 
-      let generatedCuts: ViralCut[] =
-        cutsRes.ok && Array.isArray(cutsRes.data?.cuts) && cutsRes.data.cuts.length > 0
-          ? cutsRes.data.cuts
-          : DEFAULT_VIRAL_CUTS;
+      if (!cutsRes.ok || !Array.isArray(cutsRes.data?.cuts) || cutsRes.data.cuts.length === 0) {
+        throw new Error(
+          formatBackendErrorMessage(
+            cutsRes.code || cutsRes.data?.code,
+            cutsRes.data?.error || cutsRes.error || 'A análise de IA não retornou cortes válidos para este vídeo.',
+            cutsRes.correlationId || cutsRes.data?.correlationId
+          )
+        );
+      }
+
+      let generatedCuts: ViralCut[] = cutsRes.data.cuts;
 
       if (framingData && typeof framingData.speaker1X === 'number') {
         generatedCuts = generatedCuts.map((c) => ({
@@ -1283,29 +1339,48 @@ export default function App() {
         `🚀 ${enqueuedItems.length} cortes adicionados à fila com 5 minutos de diferença! Disparando o 1º corte imediatamente...`
       );
 
+      let firstItemFailedError: string | undefined;
       if (enqueuedItems.length > 0) {
         await handlePostQueueItemNow(enqueuedItems[0].id, enqueuedItems[0]);
+        const updatedFirst = queueRef.current.find((q) => q.id === enqueuedItems[0].id);
+        if (updatedFirst?.status === 'failed') {
+          firstItemFailedError = updatedFirst.error || 'Falha ao publicar o 1º corte.';
+        }
       }
 
-      pushBotState(
-        {
-          isRunning: false,
-          step: 4,
-          cutsGenerated: enqueuedItems.length,
-          message: `✅ Bot concluiu o 1º envio! Os próximos ${Math.max(0, enqueuedItems.length - 1)} cortes estão aguardando na fila de 5 em 5 min.`,
-        },
-        `🎉 1º corte processado! A fila automática postará o próximo vídeo a cada 5 minutos (ou clique em "Pular Tempo de Espera" abaixo).`
-      );
+      if (firstItemFailedError) {
+        pushBotState(
+          {
+            isRunning: false,
+            step: 4,
+            cutsGenerated: enqueuedItems.length,
+            message: `⚠️ ${enqueuedItems.length} cortes na fila, mas o 1º envio falhou: ${firstItemFailedError}`,
+          },
+          `⚠️ 1º corte falhou: ${firstItemFailedError}`
+        );
+      } else {
+        pushBotState(
+          {
+            isRunning: false,
+            step: 4,
+            cutsGenerated: enqueuedItems.length,
+            message: `✅ Bot concluiu o 1º envio! Os próximos ${Math.max(0, enqueuedItems.length - 1)} cortes estão aguardando na fila de 5 em 5 min.`,
+          },
+          `🎉 1º corte processado! A fila automática postará o próximo vídeo a cada 5 minutos (ou clique em "Pular Tempo de Espera" abaixo).`
+        );
+      }
     } catch (err: any) {
       console.error('AutoBot Error:', err);
       pushBotState(
         {
           isRunning: false,
           step: 0,
-          message: `❌ Erro no Bot Automático: ${err.message || 'Falha inesperada'}`,
+          message: `❌ Erro no Bot Automático: ${err?.message || 'Falha inesperada'}`,
         },
-        `❌ Erro: ${err.message || 'Falha ao executar pipeline automático'}`
+        `❌ Erro: ${err?.message || 'Falha ao executar pipeline automático'}`
       );
+    } finally {
+      isAutoBotRunningRef.current = false;
     }
   };
 
@@ -1357,24 +1432,28 @@ export default function App() {
 
   // Save cuts to localStorage
   const handleSaveCut = (newCut: SavedCut) => {
-    const updated = [newCut, ...savedCuts];
-    setSavedCuts(updated);
-    try {
-      localStorage.setItem(STORAGE_SAVED_CUTS_KEY, JSON.stringify(updated));
-    } catch (e) {
-      console.warn('Failed to save to localStorage:', e);
-    }
+    setSavedCuts((prev) => {
+      const updated = [newCut, ...prev];
+      try {
+        localStorage.setItem(STORAGE_SAVED_CUTS_KEY, JSON.stringify(updated));
+      } catch (e) {
+        console.warn('Failed to save to localStorage:', e);
+      }
+      return updated;
+    });
     showToast('💾 Corte salvo na Biblioteca de Cortes!');
   };
 
   const handleDeleteSavedCut = (id: string) => {
-    const updated = savedCuts.filter((c) => c.id !== id);
-    setSavedCuts(updated);
-    try {
-      localStorage.setItem(STORAGE_SAVED_CUTS_KEY, JSON.stringify(updated));
-    } catch (e) {
-      console.warn('Failed to update localStorage:', e);
-    }
+    setSavedCuts((prev) => {
+      const updated = prev.filter((c) => c.id !== id);
+      try {
+        localStorage.setItem(STORAGE_SAVED_CUTS_KEY, JSON.stringify(updated));
+      } catch (e) {
+        console.warn('Failed to update localStorage:', e);
+      }
+      return updated;
+    });
   };
 
   const handleSelectTrendingVideo = (url: string) => {
@@ -1582,9 +1661,11 @@ export default function App() {
                 viralCuts={viralCuts}
                 setViralCuts={(cuts) => {
                   setViralCuts(cuts);
-                  if (cuts.length > 0 && !selectedCut) {
-                    setSelectedCut(cuts[0]);
-                  }
+                  setSelectedCut((curr) => {
+                    if (cuts.length === 0) return null;
+                    if (!curr) return cuts[0];
+                    return cuts.find((c) => c.id === curr.id) || cuts[0];
+                  });
                 }}
                 onOpenCutInEditor={handleOpenCutInEditor}
                 autoPostSettings={autoPostSettings}

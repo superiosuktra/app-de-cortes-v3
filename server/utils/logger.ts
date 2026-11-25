@@ -14,7 +14,7 @@ export function sanitizeForLogs(value: any): any {
       .replace(/([?&](?:key|token|access_token|secret|refresh_token)=)[^&]+/gi, '$1[REDACTED]')
       .replace(/(session_token=)[^;]+/gi, '$1[REDACTED]')
       .replace(/(csrf_token=)[^;]+/gi, '$1[REDACTED]')
-      .replace(/("?(?:accessToken|refreshToken|clientSecret|apiKey|appSecret)"?\s*:\s*)"[^"]+"/gi, '$1"[REDACTED]"');
+      .replace(/("?(?:accessToken|refreshToken|clientSecret|apiKey|appSecret|cookies|authorization)"?\s*:\s*)"[^"]+"/gi, '$1"[REDACTED]"');
   }
   if (Array.isArray(value)) {
     return value.map(sanitizeForLogs);
@@ -22,7 +22,7 @@ export function sanitizeForLogs(value: any): any {
   if (typeof value === 'object') {
     const sanitized: Record<string, any> = {};
     for (const [k, v] of Object.entries(value)) {
-      if (/token|secret|password|apiKey|appSecret/i.test(k) && typeof v === 'string') {
+      if (/token|secret|password|apiKey|appSecret|cookie|authorization/i.test(k) && typeof v === 'string') {
         sanitized[k] = '[REDACTED]';
       } else {
         sanitized[k] = sanitizeForLogs(v);

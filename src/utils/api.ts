@@ -3,6 +3,32 @@ export interface ApiResponse<T = any> {
   status: number;
   data: T;
   error?: string;
+  code?: string;
+  correlationId?: string;
+}
+
+const BACKEND_ERROR_HINTS: Record<string, string> = {
+  YOUTUBE_BLOCKED: 'O YouTube bloqueou temporariamente o download (verificação anti-bot). Configure seus cookies do YouTube em APIs & Conexões ou tente novamente.',
+  YOUTUBE_DOWNLOAD_FAILED: 'Não foi possível baixar o trecho do YouTube. Verifique se o vídeo é público e acessível.',
+  INVALID_MEDIA: 'O arquivo de vídeo é inválido, está corrompido ou não possui stream de vídeo compatível.',
+  FFMPEG_FAILED: 'Falha ao processar o vídeo no FFmpeg. Verifique o formato do arquivo e o intervalo do corte.',
+  INVALID_CUT_INTERVAL: 'Intervalo de corte inválido ou além da duração real do vídeo.',
+  QUOTA_EXCEEDED: 'A cota da API do YouTube foi excedida. Aguarde a renovação da cota ou use outra credencial.',
+  STORAGE_FULL: 'Espaço em disco insuficiente no servidor para processar o corte.',
+  YOUTUBE_UPLOAD_FAILED: 'Falha ao enviar o corte para o YouTube. O vídeo renderizado foi preservado.',
+  JOB_NOT_FOUND: 'Tarefa de renderização não encontrada ou expirada.',
+  JOB_CANNOT_CANCEL: 'Não é possível cancelar esta tarefa no estado atual.',
+};
+
+export function formatBackendErrorMessage(
+  code?: string,
+  fallbackMessage?: string,
+  correlationId?: string
+): string {
+  const cleanMsg = (fallbackMessage || '').trim();
+  const mapped = code && BACKEND_ERROR_HINTS[code] ? BACKEND_ERROR_HINTS[code] : '';
+  const base = cleanMsg || mapped || 'Ocorreu um erro inesperado ao processar a solicitação.';
+  return correlationId ? `${base} (Ref: ${correlationId})` : base;
 }
 
 export interface FetchOptions extends RequestInit {
@@ -170,6 +196,11 @@ export async function fetchJson<T = any>(
         status: res.status,
         data: data as T,
         error: !res.ok ? data?.error || `Erro HTTP ${res.status}` : undefined,
+        code: !res.ok && typeof data?.code === 'string' ? data.code : undefined,
+        correlationId:
+          typeof data?.correlationId === 'string'
+            ? data.correlationId
+            : res.headers.get('x-correlation-id') || undefined,
       };
     } catch (err: any) {
       if (attempt < retries) {

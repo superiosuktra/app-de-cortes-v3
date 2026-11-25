@@ -92,26 +92,48 @@ export async function createBatchZipArchive(options: CreateZipOptions): Promise<
   filesCount: number;
 }> {
   const { jobId, cuts, videoTitle, includeMetadataFolder = true, onProgress } = options;
-  const zipFileName = `batch_${sanitizeFileName(videoTitle || 'cortes_virais')}_${jobId}.zip`;
+  const safeJobId = String(jobId).replace(/[^a-zA-Z0-9_-]/g, '_');
+  const zipFileName = `batch_${safeJobId}.zip`;
   const zipPath = path.join(TEMP_DIR, zipFileName);
 
   const output = fs.createWriteStream(zipPath);
   const archive = new yazl.ZipFile();
 
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const fail = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      try {
+        if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
+      } catch {}
+      reject(err);
+    };
+
     output.on('close', () => {
-      const stats = fs.statSync(zipPath);
-      console.log(`[ZipService] Arquivo ZIP concluído: ${zipPath} (${(stats.size / (1024 * 1024)).toFixed(2)} MB)`);
-      resolve({
-        zipPath,
-        totalSize: stats.size,
-        filesCount: cuts.length,
-      });
+      if (settled) return;
+      settled = true;
+      try {
+        const stats = fs.statSync(zipPath);
+        console.log(`[ZipService] Arquivo ZIP concluído: ${zipPath} (${(stats.size / (1024 * 1024)).toFixed(2)} MB)`);
+        resolve({
+          zipPath,
+          totalSize: stats.size,
+          filesCount: cuts.length,
+        });
+      } catch (err: any) {
+        reject(err);
+      }
+    });
+
+    output.on('error', (err: Error) => {
+      console.error('[ZipService] Erro ao gravar arquivo ZIP:', err);
+      fail(err);
     });
 
     archive.outputStream.on('error', (err: Error) => {
       console.error('[ZipService] Erro durante criação do ZIP:', err);
-      reject(err);
+      fail(err);
     });
 
     archive.outputStream.pipe(output);

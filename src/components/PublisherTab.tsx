@@ -30,7 +30,7 @@ import {
 import { ViralCut, SavedCut, QueueItem, AutoPostSettings, PlatformCredentials, VideoInfo, SocialPlatform } from '../types';
 import { ShortsPhonePreview } from './ShortsPhonePreview';
 import { AutoPostQueueManager, AutoBotStatus } from './AutoPostQueueManager';
-import { fetchJson, authFetch } from '../utils/api';
+import { fetchJson, authFetch, formatBackendErrorMessage } from '../utils/api';
 import confetti from 'canvas-confetti';
 
 interface PublisherTabProps {
@@ -259,7 +259,16 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
           body: formData,
         });
 
-        if (!res.ok) throw new Error('Falha ao renderizar corte do arquivo local');
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(
+            formatBackendErrorMessage(
+              errData.code,
+              errData.error || 'Falha ao renderizar corte do arquivo local',
+              errData.correlationId
+            )
+          );
+        }
 
         const blob = await res.blob();
         const url = window.URL.createObjectURL(blob);
@@ -293,7 +302,13 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
 
         if (!res.ok) {
           const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.error || 'Falha ao processar corte real do YouTube');
+          throw new Error(
+            formatBackendErrorMessage(
+              errData.code,
+              errData.error || 'Falha ao processar corte real do YouTube',
+              errData.correlationId
+            )
+          );
         }
 
         const blob = await res.blob();
@@ -360,7 +375,15 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
             setPostStatus(`🎉 ${resData.message || 'Corte real publicado no YouTube Shorts com sucesso!'}`);
             confetti({ particleCount: 80, spread: 70, origin: { y: 0.6 } });
           } else {
-            setPostStatus(`❌ ${resData.error || 'Erro ao cortar e enviar vídeo para o YouTube.'}`);
+            const errMsg = formatBackendErrorMessage(
+              resData.code,
+              resData.error || 'Erro ao cortar e enviar vídeo para o YouTube.',
+              resData.correlationId
+            );
+            const preservedHint = resData.clipId
+              ? ` O corte renderizado (${resData.clipId}) foi preservado para download ou reenvio.`
+              : '';
+            setPostStatus(`❌ ${errMsg}${preservedHint}`);
           }
           setIsPosting(false);
           return;
@@ -369,7 +392,7 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
         const effectiveVideoUrl = videoUrl || (currentCut as any)?.videoUrl;
         setPostStatus(effectiveVideoUrl ? 'Baixando trecho real do YouTube e enviando ao YouTube Shorts...' : 'Transmitindo publicação para o YouTube Shorts...');
 
-        const res = await fetchJson<{ message?: string; error?: string; videoUrl?: string; videoId?: string }>('/api/post-youtube', {
+        const res = await fetchJson<{ message?: string; error?: string; code?: string; correlationId?: string; videoUrl?: string; videoId?: string }>('/api/post-youtube', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -393,7 +416,13 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
           setPostStatus(`🎉 ${res.data.message || 'Transmissão concluída com sucesso!'}`);
           confetti({ particleCount: 80, spread: 70, origin: { y: 0.6 } });
         } else {
-          setPostStatus(`❌ ${res.data?.error || res.error || 'Erro na publicação no YouTube.'}`);
+          setPostStatus(
+            `❌ ${formatBackendErrorMessage(
+              res.data?.code || res.code,
+              res.data?.error || res.error || 'Erro na publicação no YouTube.',
+              res.data?.correlationId || res.correlationId
+            )}`
+          );
         }
       } else if (platform === 'Instagram Reels') {
         if (!tokens.instagram?.trim()) {
@@ -508,6 +537,27 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
     document.body.appendChild(downloadAnchor);
     downloadAnchor.click();
     downloadAnchor.remove();
+  };
+
+  // Export all locally stored saved cuts metadata as a single JSON file
+  const handleExportAllSavedCutsJson = () => {
+    if (savedCuts.length === 0) return;
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      totalCuts: savedCuts.length,
+      cuts: savedCuts,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: 'application/json;charset=utf-8',
+    });
+    const url = window.URL.createObjectURL(blob);
+    const downloadAnchor = document.createElement('a');
+    downloadAnchor.href = url;
+    downloadAnchor.download = `cortes_salvos_metadata_${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+    window.URL.revokeObjectURL(url);
   };
 
   return (
@@ -1322,7 +1372,17 @@ export const PublisherTab: React.FC<PublisherTabProps> = ({
                   <Bookmark className="w-4 h-4 text-pink-400" />
                   <h3 className="text-sm font-bold text-white">Biblioteca de Cortes Salvos</h3>
                 </div>
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={handleExportAllSavedCutsJson}
+                    disabled={savedCuts.length === 0}
+                    className="flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-purple-950/40 hover:bg-purple-900/50 border border-purple-500/40 text-purple-200 text-[11px] font-bold transition disabled:opacity-40 disabled:cursor-not-allowed"
+                    title="Baixar arquivo JSON com todos os metadados dos cortes salvos"
+                  >
+                    <Download className="w-3 h-3" />
+                    <span>Exportar JSON</span>
+                  </button>
                   {savedCuts.length > 0 && onClearAllSavedCuts && (
                     !confirmClearLibrary ? (
                       <button

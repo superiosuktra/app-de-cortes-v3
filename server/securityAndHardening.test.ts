@@ -511,21 +511,28 @@ test('P1.9 - resolveUserYouTubeCookies returns decrypted user cookies and downlo
 
   assert.equal(resolveUserYouTubeCookies(userId), sampleCookies);
 
-  // Trigger downloadYouTubeSlice with unreachable video (will create 0600 cookie file and clean it up in finally)
-  const slicePath = await downloadYouTubeSlice({
-    videoUrl: 'https://www.youtube.com/watch?v=invalid_999',
-    startTime: '00:00',
-    endTime: '00:03',
-    userId,
-  });
+  // Trigger downloadYouTubeSlice with unreachable video (must reject without synthetic fallback and clean up 0600 cookie file in finally)
+  await assert.rejects(
+    () =>
+      downloadYouTubeSlice({
+        videoUrl: 'https://www.youtube.com/watch?v=invalid_999',
+        startTime: '00:00',
+        endTime: '00:03',
+        userId,
+      }),
+    (err: unknown) => {
+      assert.ok(err instanceof Error);
+      const code = (err as { code?: string }).code;
+      assert.ok(
+        code === 'YOUTUBE_DOWNLOAD_FAILED' || code === 'YOUTUBE_BLOCKED',
+        `Expected YOUTUBE_DOWNLOAD_FAILED or YOUTUBE_BLOCKED, got ${code}`
+      );
+      return true;
+    }
+  );
 
-  try {
-    assert.ok(fs.existsSync(slicePath));
-    const leftoverCookies = fs.readdirSync(TEMP_DIR).filter((f) => f.startsWith('cookies_'));
-    assert.equal(leftoverCookies.length, 0, 'Temporary cookie file must be deleted in finally');
-  } finally {
-    if (fs.existsSync(slicePath)) fs.unlinkSync(slicePath);
-  }
+  const leftoverCookies = fs.readdirSync(TEMP_DIR).filter((f) => f.startsWith('cookies_'));
+  assert.equal(leftoverCookies.length, 0, 'Temporary cookie file must be deleted in finally');
 });
 
 test('P1.10 - downloadYouTubeSlice and sanitizeTimestamp reject invalid timestamps instead of silently falling back to 00:00', async () => {
